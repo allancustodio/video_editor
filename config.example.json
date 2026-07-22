@@ -1,0 +1,13 @@
+{
+  "target_speaker": "RAFAEL FOSSALUSSA",
+  "minimum_confidence": 0.5,
+  "provider": "rules",
+  "ollama": {
+    "url": "http://localhost:11434",
+    "model": "qwen3:8b"
+  },
+  "gemini": {
+    "model": "gemini-2.5-flash"
+  },
+  "cut_mode": "exact"
+}

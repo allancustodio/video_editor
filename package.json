@@ -1,0 +1,16 @@
+{
+  "name": "trade-video-cutter",
+  "version": "1.1.0",
+  "private": true,
+  "description": "Detecta operações em transcrições VTT e gera cortes locais com FFmpeg.",
+  "scripts": {
+    "setup": "node scripts/setup.js",
+    "postinstall": "node scripts/setup.js",
+    "dev": "node scripts/dev.js",
+    "start": "node scripts/dev.js",
+    "analyze:example": "node scripts/analyze-example.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

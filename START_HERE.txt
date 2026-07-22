@@ -1,0 +1,15 @@
+TRADE VIDEO CUTTER - INICIO RAPIDO
+
+1. Instale Node.js 18+, Python 3.11+ e FFmpeg.
+2. Abra o terminal nesta pasta.
+3. Execute:
+
+   npm install
+   npm run dev
+
+4. Abra http://localhost:8501 caso o navegador nao abra sozinho.
+5. Selecione a transcricao e informe o caminho do video local.
+6. Revise as operacoes encontradas e gere os cortes.
+
+Nos proximos usos, execute apenas: npm run dev
+Para encerrar: Ctrl + C
