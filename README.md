@@ -185,6 +185,13 @@ Para criar vídeos verticais em 1080x1920, informe também o vídeo separado do 
 
 Os vídeos da tela e do professor devem compartilhar a mesma linha do tempo. Se necessário, use o ajuste de sincronização disponível na interface.
 
+No modo vertical, abra **Ajustar enquadramento vertical** para controlar:
+
+- zoom e posição horizontal/vertical do professor;
+- zoom e posição horizontal/vertical do gráfico;
+- restauração do enquadramento padrão;
+- imagem vertical rápida antes de gerar a prévia em vídeo de 10 segundos.
+
 Exemplo pela linha de comando:
 
 ```bat

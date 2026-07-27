@@ -70,6 +70,105 @@ def _crop_filter(operation: Operation) -> str:
     )
 
 
+def _even_size(value: float) -> int:
+    return max(2, int(round(value)) // 2 * 2)
+
+
+def _even_offset(value: float) -> int:
+    return max(0, int(round(value)) // 2 * 2)
+
+
+def _position_anchor(value: float) -> float:
+    """Convert a -100..100 UI position into a 0..1 crop anchor."""
+    return (min(max(value, -100.0), 100.0) + 100.0) / 200.0
+
+
+def _vertical_filter(
+    operation: Operation,
+    *,
+    professor_zoom: float = 1.0,
+    professor_position_x: float = 0.0,
+    professor_position_y: float = 0.0,
+    graph_zoom: float = 1.0,
+    graph_position_x: float = 0.0,
+    graph_position_y: float = 0.0,
+) -> str:
+    professor_zoom = min(max(professor_zoom, 1.0), 3.0)
+    graph_zoom = min(max(graph_zoom, 1.0), 3.0)
+    professor_width = _even_size(1080 * professor_zoom)
+    professor_height = _even_size(960 * professor_zoom)
+    graph_width = _even_size(1080 * graph_zoom)
+    graph_height = _even_size(960 * graph_zoom)
+
+    professor_x = _position_anchor(professor_position_x)
+    professor_y = _position_anchor(professor_position_y)
+    graph_x = _even_offset(max(0, graph_width - 1080) * _position_anchor(graph_position_x))
+    graph_y = _even_offset(max(0, graph_height - 960) * _position_anchor(graph_position_y))
+    graph_filter = _crop_filter(operation) if operation.crop_area != "full" else "null"
+
+    return (
+        f"[0:v]{graph_filter},"
+        f"scale={graph_width}:{graph_height}:force_original_aspect_ratio=decrease,"
+        f"pad={graph_width}:{graph_height}:(ow-iw)/2:(oh-ih)/2:color=black,"
+        f"crop=1080:960:{graph_x}:{graph_y},setsar=1[graph];"
+        f"[1:v]scale={professor_width}:{professor_height}:force_original_aspect_ratio=increase,"
+        f"crop=1080:960:(iw-ow)*{professor_x:.6f}:(ih-oh)*{professor_y:.6f},"
+        "setsar=1[professor];"
+        "[professor][graph]vstack=inputs=2,format=yuv420p[v]"
+    )
+
+
+def capture_vertical_frame(
+    video_path: str | Path,
+    professor_video_path: str | Path,
+    operation: Operation,
+    *,
+    ffmpeg_path: str = "",
+    professor_sync_offset: float = 0.0,
+    professor_zoom: float = 1.0,
+    professor_position_x: float = 0.0,
+    professor_position_y: float = 0.0,
+    graph_zoom: float = 1.0,
+    graph_position_x: float = 0.0,
+    graph_position_y: float = 0.0,
+) -> bytes:
+    """Return one composed 1080x1920 JPEG using the final render filter."""
+    ffmpeg = find_ffmpeg(ffmpeg_path)
+    source = Path(video_path)
+    professor = Path(professor_video_path)
+    if not source.exists():
+        raise FileNotFoundError(f"Vídeo não encontrado: {source}")
+    if not professor_video_path or not professor.exists():
+        raise FileNotFoundError(f"Vídeo do professor não encontrado: {professor}")
+
+    start = format_timecode(max(0.0, operation.cut_start), milliseconds=True)
+    professor_start = format_timecode(
+        max(0.0, operation.cut_start + professor_sync_offset), milliseconds=True
+    )
+    filter_complex = _vertical_filter(
+        operation,
+        professor_zoom=professor_zoom,
+        professor_position_x=professor_position_x,
+        professor_position_y=professor_position_y,
+        graph_zoom=graph_zoom,
+        graph_position_x=graph_position_x,
+        graph_position_y=graph_position_y,
+    )
+    command = [
+        ffmpeg, "-hide_banner", "-loglevel", "error",
+        "-ss", start, "-i", str(source),
+        "-ss", professor_start, "-i", str(professor),
+        "-filter_complex", filter_complex,
+        "-map", "[v]", "-frames:v", "1",
+        "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1",
+    ]
+    completed = subprocess.run(command, capture_output=True, check=False)
+    if completed.returncode != 0:
+        message = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"FFmpeg não conseguiu gerar a prévia vertical:\n{message}")
+    return completed.stdout
+
+
 def cut_video(
     video_path: str | Path,
     operation: Operation,
@@ -81,6 +180,12 @@ def cut_video(
     professor_video_path: str | Path = "",
     professor_sync_offset: float = 0.0,
     audio_source: str = "professor",
+    professor_zoom: float = 1.0,
+    professor_position_x: float = 0.0,
+    professor_position_y: float = 0.0,
+    graph_zoom: float = 1.0,
+    graph_position_x: float = 0.0,
+    graph_position_y: float = 0.0,
 ) -> Path:
     if output_format not in {"original", "vertical"}:
         raise ValueError(f"Formato de saída inválido: {output_format}")
@@ -107,14 +212,14 @@ def cut_video(
         professor_start = format_timecode(
             max(0.0, operation.cut_start + professor_sync_offset), milliseconds=True
         )
-        graph_filter = _crop_filter(operation) if should_crop else "null"
-        filter_complex = (
-            f"[0:v]{graph_filter},"
-            "scale=1080:960:force_original_aspect_ratio=decrease,"
-            "pad=1080:960:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[graph];"
-            "[1:v]scale=1080:960:force_original_aspect_ratio=increase,"
-            "crop=1080:960,setsar=1[professor];"
-            "[professor][graph]vstack=inputs=2[v]"
+        filter_complex = _vertical_filter(
+            operation,
+            professor_zoom=professor_zoom,
+            professor_position_x=professor_position_x,
+            professor_position_y=professor_position_y,
+            graph_zoom=graph_zoom,
+            graph_position_x=graph_position_x,
+            graph_position_y=graph_position_y,
         )
         audio_input = "0:a?" if audio_source == "screen" else "1:a?"
         command = [
@@ -165,6 +270,12 @@ def cut_selected(
     professor_video_path: str | Path = "",
     professor_sync_offset: float = 0.0,
     audio_source: str = "professor",
+    professor_zoom: float = 1.0,
+    professor_position_x: float = 0.0,
+    professor_position_y: float = 0.0,
+    graph_zoom: float = 1.0,
+    graph_position_x: float = 0.0,
+    graph_position_y: float = 0.0,
 ) -> list[Path]:
     selected = [operation for operation in operations if operation.selected]
     output = Path(output_dir)
@@ -184,6 +295,12 @@ def cut_selected(
             professor_video_path=professor_video_path,
             professor_sync_offset=professor_sync_offset,
             audio_source=audio_source,
+            professor_zoom=professor_zoom,
+            professor_position_x=professor_position_x,
+            professor_position_y=professor_position_y,
+            graph_zoom=graph_zoom,
+            graph_position_x=graph_position_x,
+            graph_position_y=graph_position_y,
         )
         results.append(result)
         if progress:

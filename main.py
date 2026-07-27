@@ -35,6 +35,12 @@ def build_parser() -> argparse.ArgumentParser:
     cut.add_argument("--professor-video", default="")
     cut.add_argument("--professor-sync-offset", type=float, default=0.0)
     cut.add_argument("--audio-source", choices=["professor", "screen"], default="professor")
+    cut.add_argument("--professor-zoom", type=float, default=1.0)
+    cut.add_argument("--professor-x", type=float, default=0.0)
+    cut.add_argument("--professor-y", type=float, default=0.0)
+    cut.add_argument("--graph-zoom", type=float, default=1.0)
+    cut.add_argument("--graph-x", type=float, default=0.0)
+    cut.add_argument("--graph-y", type=float, default=0.0)
     cut.add_argument("--all", action="store_true", help="Corta inclusive candidatos não selecionados")
 
     all_command = subparsers.add_parser("all", help="Analisa e corta em uma única execução")
@@ -53,6 +59,12 @@ def build_parser() -> argparse.ArgumentParser:
     all_command.add_argument("--professor-video", default="")
     all_command.add_argument("--professor-sync-offset", type=float, default=0.0)
     all_command.add_argument("--audio-source", choices=["professor", "screen"], default="professor")
+    all_command.add_argument("--professor-zoom", type=float, default=1.0)
+    all_command.add_argument("--professor-x", type=float, default=0.0)
+    all_command.add_argument("--professor-y", type=float, default=0.0)
+    all_command.add_argument("--graph-zoom", type=float, default=1.0)
+    all_command.add_argument("--graph-x", type=float, default=0.0)
+    all_command.add_argument("--graph-y", type=float, default=0.0)
     return parser
 
 
@@ -102,6 +114,12 @@ def main() -> int:
                 professor_video_path=args.professor_video,
                 professor_sync_offset=args.professor_sync_offset,
                 audio_source=args.audio_source,
+                professor_zoom=args.professor_zoom,
+                professor_position_x=args.professor_x,
+                professor_position_y=args.professor_y,
+                graph_zoom=args.graph_zoom,
+                graph_position_x=args.graph_x,
+                graph_position_y=args.graph_y,
             )
             print(f"{len(results)} clipes gerados em {args.output}")
             return 0
@@ -130,6 +148,12 @@ def main() -> int:
                 professor_video_path=args.professor_video,
                 professor_sync_offset=args.professor_sync_offset,
                 audio_source=args.audio_source,
+                professor_zoom=args.professor_zoom,
+                professor_position_x=args.professor_x,
+                professor_position_y=args.professor_y,
+                graph_zoom=args.graph_zoom,
+                graph_position_x=args.graph_x,
+                graph_position_y=args.graph_y,
             )
             print(f"\n{len(results)} clipes gerados em {Path(args.output) / 'clips'}")
             return 0

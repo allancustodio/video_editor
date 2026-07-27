@@ -12,7 +12,13 @@ import streamlit as st
 from trade_cutter.ai import refine_operations
 from trade_cutter.detector import DetectionConfig, detect_operations
 from trade_cutter.export import create_html_report, save_operations
-from trade_cutter.ffmpeg import capture_frame, cut_selected, cut_video, find_ffmpeg
+from trade_cutter.ffmpeg import (
+    capture_frame,
+    capture_vertical_frame,
+    cut_selected,
+    cut_video,
+    find_ffmpeg,
+)
 from trade_cutter.models import Operation
 from trade_cutter.timecode import format_timecode, parse_timecode
 from trade_cutter.vtt import parse_vtt, transcript_between
@@ -325,6 +331,12 @@ if operations:
 
     professor_sync_offset = 0.0
     audio_source = "professor"
+    professor_zoom = 1.0
+    professor_position_x = 0.0
+    professor_position_y = 0.0
+    graph_zoom = 1.0
+    graph_position_x = 0.0
+    graph_position_y = 0.0
     if output_format == "vertical":
         settings_left, settings_right = st.columns(2)
         professor_sync_offset = settings_left.number_input(
@@ -340,6 +352,137 @@ if operations:
         st.caption("Professor na metade superior e gráfico selecionado na metade inferior.")
         if not professor_video_path or not Path(professor_video_path).exists():
             st.warning("Informe um vídeo do professor válido na barra lateral para gerar a saída vertical.")
+
+        with st.expander("Ajustar enquadramento vertical", expanded=True):
+            framing_defaults = {
+                "professor_zoom_percent": 100,
+                "professor_position_x": 0,
+                "professor_position_y": 0,
+                "graph_zoom_percent": 100,
+                "graph_position_x": 0,
+                "graph_position_y": 0,
+            }
+            for key, value in framing_defaults.items():
+                st.session_state.setdefault(key, value)
+
+            if st.button("Restaurar enquadramento", key="reset_vertical_framing"):
+                for key, value in framing_defaults.items():
+                    st.session_state[key] = value
+                st.session_state.pop("vertical_frame_preview", None)
+                st.session_state.pop("vertical_preview_path", None)
+                st.rerun()
+
+            professor_controls, graph_controls = st.columns(2)
+            with professor_controls:
+                st.markdown("**Professor**")
+                professor_zoom_percent = st.slider(
+                    "Zoom do professor",
+                    min_value=100,
+                    max_value=200,
+                    step=5,
+                    format="%d%%",
+                    key="professor_zoom_percent",
+                )
+                professor_position_x = st.slider(
+                    "Professor: horizontal",
+                    min_value=-100,
+                    max_value=100,
+                    step=5,
+                    help="-100 mostra mais a esquerda; +100 mostra mais a direita.",
+                    key="professor_position_x",
+                )
+                professor_position_y = st.slider(
+                    "Professor: vertical",
+                    min_value=-100,
+                    max_value=100,
+                    step=5,
+                    help="-100 mostra mais a parte superior; +100 mostra mais a inferior.",
+                    key="professor_position_y",
+                )
+            with graph_controls:
+                st.markdown("**Gráfico**")
+                graph_zoom_percent = st.slider(
+                    "Zoom do gráfico",
+                    min_value=100,
+                    max_value=160,
+                    step=5,
+                    format="%d%%",
+                    key="graph_zoom_percent",
+                )
+                graph_position_x = st.slider(
+                    "Gráfico: horizontal",
+                    min_value=-100,
+                    max_value=100,
+                    step=5,
+                    help="-100 mostra mais a esquerda; +100 mostra mais a direita.",
+                    key="graph_position_x",
+                )
+                graph_position_y = st.slider(
+                    "Gráfico: vertical",
+                    min_value=-100,
+                    max_value=100,
+                    step=5,
+                    help="-100 mostra mais a parte superior; +100 mostra mais a inferior.",
+                    key="graph_position_y",
+                )
+
+            st.caption(
+                "A posição atua quando há imagem além da moldura. "
+                "Se um movimento não aparecer, aumente um pouco o zoom."
+            )
+            professor_zoom = professor_zoom_percent / 100.0
+            graph_zoom = graph_zoom_percent / 100.0
+            framing_signature = (
+                operation.id,
+                operation.cut_start,
+                operation.crop_area,
+                operation.crop_x,
+                operation.crop_y,
+                operation.crop_width,
+                operation.crop_height,
+                professor_sync_offset,
+                professor_zoom,
+                professor_position_x,
+                professor_position_y,
+                graph_zoom,
+                graph_position_x,
+                graph_position_y,
+            )
+
+            if st.button("Atualizar imagem vertical", type="primary"):
+                try:
+                    with st.spinner("Montando imagem vertical..."):
+                        image = capture_vertical_frame(
+                            video_path,
+                            professor_video_path,
+                            operation,
+                            ffmpeg_path=ffmpeg_path,
+                            professor_sync_offset=professor_sync_offset,
+                            professor_zoom=professor_zoom,
+                            professor_position_x=professor_position_x,
+                            professor_position_y=professor_position_y,
+                            graph_zoom=graph_zoom,
+                            graph_position_x=graph_position_x,
+                            graph_position_y=graph_position_y,
+                        )
+                    st.session_state["vertical_frame_preview"] = {
+                        "image": image,
+                        "signature": framing_signature,
+                    }
+                except Exception as error:
+                    st.error(str(error))
+
+            frame_preview = st.session_state.get("vertical_frame_preview")
+            if frame_preview:
+                if frame_preview["signature"] == framing_signature:
+                    preview_column, _ = st.columns([1, 2])
+                    preview_column.image(
+                        frame_preview["image"],
+                        caption="Prévia 1080x1920 do corte selecionado",
+                        width="stretch",
+                    )
+                else:
+                    st.info("O enquadramento mudou. Clique em Atualizar imagem vertical para conferir.")
 
         if st.button("Gerar prévia vertical de 10 segundos"):
             try:
@@ -360,13 +503,28 @@ if operations:
                         professor_video_path=professor_video_path,
                         professor_sync_offset=professor_sync_offset,
                         audio_source=audio_source,
+                        professor_zoom=professor_zoom,
+                        professor_position_x=professor_position_x,
+                        professor_position_y=professor_position_y,
+                        graph_zoom=graph_zoom,
+                        graph_position_x=graph_position_x,
+                        graph_position_y=graph_position_y,
                     )
-                st.session_state["vertical_preview_path"] = str(preview_target)
+                st.session_state["vertical_preview_path"] = {
+                    "path": str(preview_target),
+                    "signature": framing_signature,
+                }
             except Exception as error:
                 st.error(str(error))
-        vertical_preview_path = st.session_state.get("vertical_preview_path")
-        if vertical_preview_path and Path(vertical_preview_path).exists():
-            st.video(vertical_preview_path)
+        vertical_preview = st.session_state.get("vertical_preview_path")
+        if isinstance(vertical_preview, dict):
+            if (
+                vertical_preview["signature"] == framing_signature
+                and Path(vertical_preview["path"]).exists()
+            ):
+                st.video(vertical_preview["path"])
+            else:
+                st.info("A prévia em vídeo está desatualizada para o enquadramento atual.")
 
     cut_mode_label = st.radio(
         "Modo de corte", ["Exato (recodifica)", "Rápido (sem recodificar)"], horizontal=True
@@ -414,6 +572,12 @@ if operations:
                     professor_video_path=professor_video_path,
                     professor_sync_offset=professor_sync_offset,
                     audio_source=audio_source,
+                    professor_zoom=professor_zoom,
+                    professor_position_x=professor_position_x,
+                    professor_position_y=professor_position_y,
+                    graph_zoom=graph_zoom,
+                    graph_position_x=graph_position_x,
+                    graph_position_y=graph_position_y,
                 )
                 save_operations(
                     Path(output_dir) / "cuts.json", operations, st.session_state.get("source", "")
