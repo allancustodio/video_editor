@@ -60,7 +60,7 @@ LABEL_TO_AREA = {label: key for key, label in AREA_LABELS.items()}
 DEFAULT_CROP_PRESETS = {
     "flex_index": {"x": 0.000, "y": 0.000, "width": 0.250, "height": 1.000},
     "flex_dollar": {"x": 0.250, "y": 0.000, "width": 0.250, "height": 1.000},
-    "profit_index": {"x": 0.500, "y": 0.000, "width": 0.305, "height": 1.000},
+    "profit_index": {"x": 0.500, "y": 0.000, "width": 0.250, "height": 1.000},
     "profit_dollar": {"x": 0.750, "y": 0.000, "width": 0.250, "height": 1.000},
 }
 PREVIEW_COLORS = {
