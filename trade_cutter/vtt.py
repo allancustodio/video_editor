@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import re
+import unicodedata
 from pathlib import Path
 
 from .models import Cue
@@ -75,3 +76,19 @@ def transcript_between(cues: list[Cue], start: float, end: float, include_speake
         prefix = f"{cue.speaker}: " if include_speakers and cue.speaker else ""
         rows.append(f"[{format_timecode(cue.start)}] {prefix}{cue.text}")
     return "\n".join(rows)
+
+
+def search_cues(cues: list[Cue], word: str) -> list[Cue]:
+    term = _normalize_search(word)
+    if not term:
+        return []
+    if " " in term:
+        raise ValueError("Informe somente uma palavra por busca.")
+    pattern = re.compile(rf"(?<!\w){re.escape(term)}(?!\w)")
+    return [cue for cue in cues if pattern.search(_normalize_search(cue.text))]
+
+
+def _normalize_search(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value.lower())
+    normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+    return re.sub(r"\s+", " ", normalized).strip()

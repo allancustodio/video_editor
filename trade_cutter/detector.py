@@ -6,6 +6,7 @@ import unicodedata
 from dataclasses import dataclass
 
 from .models import Cue, Event, Operation
+from .rules import CompiledDetectionRules, RuleDefinition, compile_rules, default_rules
 
 
 def normalize(text: str) -> str:
@@ -17,51 +18,13 @@ def normalize(text: str) -> str:
 @dataclass(slots=True)
 class DetectionConfig:
     target_speaker: str = "RAFAEL FOSSALUSSA"
-    seconds_before_setup: float = 10.0
-    seconds_before_entry: float = 45.0
+    seconds_before_setup: float = 0.0
+    seconds_before_entry: float = 0.0
     seconds_after_result: float = 25.0
     setup_lookback: float = 240.0
     outcome_lookahead: float = 2100.0
     minimum_confidence: float = 0.50
 
-
-ENTRY_PATTERNS: list[tuple[re.Pattern[str], float]] = [
-    (re.compile(r"\b(comprei|vendi|entrei)\b"), 1.00),
-    (re.compile(r"\b(ja )?estou (comprado|vendido)\b"), 0.95),
-    (re.compile(r"\bacionou( e pagou)?\b"), 0.84),
-    (re.compile(r"\bpegou (a )?(ordem|entrada)\b"), 0.80),
-    (re.compile(r"\bativou\b"), 0.75),
-]
-
-SETUP_PATTERNS: list[tuple[re.Pattern[str], float]] = [
-    (re.compile(r"\beu vou (comprar|vender)\b"), 0.85),
-    (re.compile(r"\b(vou|vamos) (comprar|vender)\b"), 0.76),
-    (re.compile(r"\bcomeca a (comprar|vender)\b"), 0.70),
-    (re.compile(r"\b(vamos|tentar) pegar um (scalp|scalpe)\b"), 0.58),
-    (re.compile(r"\bquem for entrar\b"), 0.42),
-    (re.compile(r"\bentrada\b"), 0.35),
-]
-
-OUTCOME_PATTERNS: list[tuple[re.Pattern[str], str, float]] = [
-    (re.compile(r"\b(primeiro alvo|foi ali no alvo|bateu o alvo)\b"), "primeiro alvo", 0.65),
-    (re.compile(r"\bsegundo alvo\b"), "segundo alvo", 0.75),
-    (re.compile(r"\bterceiro alvo\b"), "terceiro alvo", 0.90),
-    (re.compile(r"\b(parcial|parcela|parciais)\b"), "parcial", 0.52),
-    (re.compile(r"\bpagou\b"), "pagou", 0.62),
-    (re.compile(r"\b(estopou|tomou um stop|pegou o stop)\b"), "stop", 0.78),
-    (re.compile(r"\bzerei\b"), "zerou", 0.82),
-    (re.compile(r"\b(tirei|tirar|retirei) (o )?risco\b"), "risco retirado", 0.72),
-    (re.compile(r"\bbreakeven\b"), "breakeven", 0.60),
-    (re.compile(r"\bme tirou aqui\b"), "encerrada", 0.75),
-]
-
-NEGATION_PATTERNS = [
-    re.compile(r"\bnao (entrei|comprei|vendi|vou comprar|vou vender|acionou)\b"),
-    re.compile(r"\bnao vou (comprar|vender)\b"),
-    re.compile(r"\bse (ele )?acionar\b"),
-    re.compile(r"\bse chegar.*\b(compro|vendo|comprar|vender)\b"),
-    re.compile(r"\bnao (to|estou) (nem )?operando\b"),
-]
 
 DIRECTION_BUY = [
     re.compile(r"\b(comprei|comprado|comprinha|vou comprar|compra aqui|entrada de compra)\b"),
@@ -93,6 +56,8 @@ RETROSPECTIVE_PATTERNS = [
     re.compile(r"\bcomprei aleatorio\b"),
 ]
 
+_DEFAULT_DETECTION_RULES = compile_rules(default_rules())
+
 
 def _speaker_matches(cue: Cue, target: str) -> bool:
     if not target.strip():
@@ -100,8 +65,8 @@ def _speaker_matches(cue: Cue, target: str) -> bool:
     return normalize(target) in normalize(cue.speaker)
 
 
-def _is_negated(text: str) -> bool:
-    return any(pattern.search(text) for pattern in NEGATION_PATTERNS)
+def _is_negated(text: str, rules: CompiledDetectionRules) -> bool:
+    return any(pattern.search(text) for pattern in rules.negation)
 
 
 def _direction(text: str) -> str:
@@ -120,13 +85,18 @@ def _asset(text: str) -> str:
     return ""
 
 
-def classify_events(cues: list[Cue], config: DetectionConfig) -> list[Event]:
+def classify_events(
+    cues: list[Cue],
+    config: DetectionConfig,
+    rules: CompiledDetectionRules | None = None,
+) -> list[Event]:
+    rules = rules or _DEFAULT_DETECTION_RULES
     events: list[Event] = []
     for position, cue in enumerate(cues):
         if not _speaker_matches(cue, config.target_speaker):
             continue
         text = normalize(cue.text)
-        negated = _is_negated(text)
+        negated = _is_negated(text, rules)
         direction = _direction(text)
         asset = _asset(text)
         nearby = " ".join(
@@ -136,12 +106,12 @@ def classify_events(cues: list[Cue], config: DetectionConfig) -> list[Event]:
         )
         has_trade_context = bool(TRADE_TERMS.search(f"{text} {nearby}"))
 
-        for pattern, strength in SETUP_PATTERNS:
+        for pattern, strength in rules.setup:
             if pattern.search(text) and not negated:
                 events.append(Event(cue.index, cue.start, "setup", cue.text, cue.speaker, direction, asset, strength))
                 break
 
-        for pattern, strength in ENTRY_PATTERNS:
+        for pattern, strength in rules.entry:
             if not pattern.search(text):
                 continue
             adjusted = strength
@@ -162,7 +132,7 @@ def classify_events(cues: list[Cue], config: DetectionConfig) -> list[Event]:
                 events.append(Event(cue.index, cue.start, "entry", cue.text, cue.speaker, direction, asset, adjusted))
             break
 
-        for pattern, label, strength in OUTCOME_PATTERNS:
+        for pattern, label, strength in rules.outcome:
             if pattern.search(text):
                 events.append(Event(cue.index, cue.start, f"outcome:{label}", cue.text, cue.speaker, direction, asset, strength))
                 break
@@ -180,7 +150,13 @@ def _context_text(cues: list[Cue], start: float, end: float, target: str = "") -
     return " ".join(values)
 
 
-def _infer_direction(cues: list[Cue], event: Event, setup: Event | None, target: str) -> str:
+def _infer_direction(
+    cues: list[Cue],
+    event: Event,
+    setup: Event | None,
+    target: str,
+    rules: CompiledDetectionRules,
+) -> str:
     if event.direction:
         return event.direction
     nearby = [
@@ -190,7 +166,7 @@ def _infer_direction(cues: list[Cue], event: Event, setup: Event | None, target:
     nearby.sort(key=lambda cue: abs(cue.start - event.time))
     for cue in nearby:
         text = normalize(cue.text)
-        if _is_negated(text):
+        if _is_negated(text, rules):
             continue
         found = _direction(text)
         if found and (cue.start <= event.time + 20 or re.search(r"\b(stop|ordem|entrada)\b", text)):
@@ -200,7 +176,13 @@ def _infer_direction(cues: list[Cue], event: Event, setup: Event | None, target:
     return ""
 
 
-def _infer_asset(cues: list[Cue], event: Event, setup: Event | None, target: str) -> str:
+def _infer_asset(
+    cues: list[Cue],
+    event: Event,
+    setup: Event | None,
+    target: str,
+    rules: CompiledDetectionRules,
+) -> str:
     if event.asset:
         return event.asset
     if setup and setup.asset:
@@ -212,7 +194,7 @@ def _infer_asset(cues: list[Cue], event: Event, setup: Event | None, target: str
     nearby.sort(key=lambda cue: abs(cue.start - event.time))
     for cue in nearby:
         text = normalize(cue.text)
-        if _is_negated(text):
+        if _is_negated(text, rules):
             continue
         found = _asset(text)
         if found and TRADE_TERMS.search(text) and re.search(r"\b(stop|alvo|ordem|scalp|entrada|compra|venda|operar|rompimento)\b", text):
@@ -249,9 +231,19 @@ def _near_duplicate(previous: Operation, entry_time: float, direction: str, asse
     return direction_matches and asset_matches
 
 
-def detect_operations(cues: list[Cue], config: DetectionConfig | None = None) -> list[Operation]:
+def detect_operations(
+    cues: list[Cue],
+    config: DetectionConfig | None = None,
+    rules: list[RuleDefinition] | CompiledDetectionRules | None = None,
+) -> list[Operation]:
     config = config or DetectionConfig()
-    events = classify_events(cues, config)
+    if rules is None:
+        compiled_rules = _DEFAULT_DETECTION_RULES
+    elif isinstance(rules, CompiledDetectionRules):
+        compiled_rules = rules
+    else:
+        compiled_rules = compile_rules(rules)
+    events = classify_events(cues, config, compiled_rules)
     raw_entries = [event for event in events if event.kind == "entry" and event.strength >= 0.40]
     setups = [event for event in events if event.kind == "setup"]
     entries = _prune_retrospective_entries(raw_entries, setups, config.outcome_lookahead)
@@ -265,8 +257,8 @@ def detect_operations(cues: list[Cue], config: DetectionConfig | None = None) ->
             if 0 <= entry.time - setup.time <= config.setup_lookback
         ]
         setup = candidate_setups[-1] if candidate_setups else None
-        direction = _infer_direction(cues, entry, setup, config.target_speaker)
-        asset = _infer_asset(cues, entry, setup, config.target_speaker)
+        direction = _infer_direction(cues, entry, setup, config.target_speaker, compiled_rules)
+        asset = _infer_asset(cues, entry, setup, config.target_speaker, compiled_rules)
 
         if operations and _near_duplicate(operations[-1], entry.time, direction, asset):
             operations[-1].event_times.append(entry.time)

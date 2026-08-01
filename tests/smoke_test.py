@@ -7,7 +7,7 @@ sys.path.insert(0, str(ROOT))
 
 from trade_cutter.detector import DetectionConfig, detect_operations
 from trade_cutter.export import load_operations, save_operations
-from trade_cutter.models import Operation
+from trade_cutter.models import Operation, Scene
 from trade_cutter.vtt import parse_vtt
 
 
@@ -40,11 +40,26 @@ def main() -> None:
         operations[0].crop_area = "profit_dollar"
         operations[0].crop_x = 0.75
         operations[0].crop_width = 0.19
+        operations[0].sequence_order = 3
+        operations[0].output_orientation = "horizontal"
+        operations[0].scenes = [
+            Scene(
+                "intro", operations[0].cut_start, operations[0].cut_end,
+                "side_by_side", professor_zoom=1.25, graph_x=50,
+                graph_alignment="right",
+            )
+        ]
         save_operations(target, operations, str(TRANSCRIPT))
         loaded = load_operations(target)
         assert loaded[0].crop_area == "profit_dollar"
         assert loaded[0].crop_x == 0.75
         assert loaded[0].crop_width == 0.19
+        assert loaded[0].sequence_order == 3
+        assert loaded[0].output_orientation == "horizontal"
+        assert loaded[0].scenes[0].layout == "side_by_side"
+        assert loaded[0].scenes[0].professor_zoom == 1.25
+        assert loaded[0].scenes[0].graph_x == 50
+        assert loaded[0].scenes[0].graph_alignment == "right"
 
     print(f"OK: {len(cues)} legendas e {len(operations)} candidatos.")
 

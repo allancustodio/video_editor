@@ -1,116 +1,64 @@
 {
-  "version": 2,
-  "transcript": "C:\\Users\\allan\\Downloads\\GMT20260717-114920_Recording.transcript.vtt",
+  "version": 4,
+  "transcript": "C:\\Users\\allan\\OneDrive\\Vídeos\\Aulas\\2026\\07 Julho\\27 Julho 2026\\GMT20260727-115333_Recording.transcript.vtt",
   "operations": [
     {
-      "id": "trade-6dabc8a4",
-      "title": "Compra",
-      "asset": "",
-      "direction": "compra",
-      "setup_start": 2416.84,
-      "entry_time": 2416.0,
-      "operation_end": 2416.84,
-      "cut_start": 2406.0,
-      "cut_end": 2441.0,
-      "result": "zerou",
-      "confidence": 0.965,
+      "id": "manual-5ebce0d8ee",
+      "title": "Corte 01:24:27",
+      "asset": "índice",
+      "direction": "",
+      "setup_start": null,
+      "entry_time": 5067.0,
+      "operation_end": 5482.0,
+      "cut_start": 5067.0,
+      "cut_end": 5474.0,
+      "result": "corte manual",
+      "confidence": 1.0,
       "evidence": [
-        "Ah, eu vou comprar um contrato no leilão pra ver esse Gap. Comprei um contrato. Ele deu uma explosão. Eu zerei.",
-        "Ah, eu vou comprar um contrato no leilão pra ver esse Gap. Comprei um contrato. Ele deu uma explosão. Eu zerei."
+        "Deixa eu comentar um negócio que jogou rápido, que a gente estava conversando."
       ],
       "event_times": [
-        2416.84,
-        2416.84
-      ],
-      "selected": false,
-      "source": "rules",
-      "crop_area": "full",
-      "crop_x": 0.0,
-      "crop_y": 0.0,
-      "crop_width": 1.0,
-      "crop_height": 1.0
-    },
-    {
-      "id": "trade-bc82d9b4",
-      "title": "Venda",
-      "asset": "",
-      "direction": "venda",
-      "setup_start": 3963.54,
-      "entry_time": 4081.0,
-      "operation_end": 4392.57,
-      "cut_start": 3953.0,
-      "cut_end": 4417.0,
-      "result": "segundo alvo, terceiro alvo, stop, parcial",
-      "confidence": 0.986,
-      "evidence": [
-        "Eu vou arriscar bem, pequenininho. Mas eu vou vender esse Keen vinte e seis. Aqui",
-        "Acionou. Vamos ver se vem. Lembra que é bem arriscado, tá porque tá bem esquisito,",
-        "pra gente, já não devolver muita coisa aí. Ó segundo alvo, hein? Mais uma parcela.",
-        "pessoal, terceiro alvo. Você já sabe onde tá aí tá só pra mim. Não precisar mudar a hora que eu estiver conduzindo meu trade,",
-        "se ele vier perder o terceiro alvo aí. Ó, esses são os alvos, hein,",
-        "A gente tomou um stop.",
-        "Se a gente tivesse feito a parcial e largada aqui em cima do novo alvo.",
-        "Então, assim, às vezes a gente acaba. Ah, mas pô. Vou devolver trezentos pontos. Tá? Trezentos pontos já com parcial, garantido. Às vezes vale a pena. E ó teria buscado mais duzentos e pouco."
-      ],
-      "event_times": [
-        4081.43,
-        4183.29,
-        4223.45,
-        4230.96,
-        4348.91,
-        4359.79,
-        4369.03,
-        4392.57
+        5067.0
       ],
       "selected": true,
-      "source": "rules",
+      "source": "manual",
       "crop_area": "profit_index",
       "crop_x": 0.5,
       "crop_y": 0.0,
       "crop_width": 0.25,
-      "crop_height": 1.0
-    },
-    {
-      "id": "trade-620cc7ef",
-      "title": "Compra",
-      "asset": "",
-      "direction": "compra",
-      "setup_start": 9069.57,
-      "entry_time": 9134.0,
-      "operation_end": 11089.24,
-      "cut_start": 9059.0,
-      "cut_end": 11114.0,
-      "result": "parcial, primeiro alvo, risco retirado, terceiro alvo, stop, encerrada",
-      "confidence": 0.99,
-      "evidence": [
-        "A gente já andou. Eu vou comprar aqui. Ó, se ele voltar.",
-        "Cara. Eu entrei aí nessa comprinha com Stop. Aqui",
-        "É? Coloquei um stop alternativo. Uma entrada mais ousada é que eu entrei voltando, já teria dado parcial.",
-        "Ó, foi ali no alvo!",
-        "Aqui. Eu já tirei o risco da operação, tá? Mas eu vou manter o meu stop no duzentos e trinta.",
-        "Pessoal está indo para o terceiro alvo, tá.",
-        "vamos lá. Eu fiz duas parciais. Eu não vou fazer essa parcial do terceiro álbum. Eu já vou Xuxar, meu stop aqui no trezentos e cinquenta e minha saída está aqui no trezentos. Deixa eu voar agora.",
-        "Já foi trezentos e vinte pontos. A gente teve um Game e tomou um stop. Eu não sei se alguém vendeu lá onde o Davi falou. Se vendeu a gente. Já virou para o lucro faz muito tempo."
-      ],
-      "event_times": [
-        9134.21,
-        9229.27,
-        10019.79,
-        10058.29,
-        10639.87,
-        10647.29,
-        10749.63,
-        10774.75,
-        10927.51,
-        11089.24
-      ],
-      "selected": false,
-      "source": "rules",
-      "crop_area": "full",
-      "crop_x": 0.0,
-      "crop_y": 0.0,
-      "crop_width": 1.0,
-      "crop_height": 1.0
+      "crop_height": 1.0,
+      "layout_mode": "original",
+      "layout_switch_time": null,
+      "sequence_order": 1,
+      "output_orientation": "vertical",
+      "scenes": [
+        {
+          "id": "scene-1",
+          "start": 5067.0,
+          "end": 5137.0,
+          "layout": "professor_top",
+          "professor_zoom": 1.0,
+          "professor_x": 0.0,
+          "professor_y": 0.0,
+          "graph_zoom": 1.0,
+          "graph_x": 0.0,
+          "graph_y": 0.0,
+          "graph_alignment": "right"
+        },
+        {
+          "id": "scene-5137000-2",
+          "start": 5137.0,
+          "end": 5474.0,
+          "layout": "professor_full",
+          "professor_zoom": 1.0,
+          "professor_x": 0.0,
+          "professor_y": 0.0,
+          "graph_zoom": 1.0,
+          "graph_x": 0.0,
+          "graph_y": 0.0,
+          "graph_alignment": "center"
+        }
+      ]
     }
   ]
 }

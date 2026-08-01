@@ -6,6 +6,7 @@ from .ai import refine_operations
 from .detector import DetectionConfig, detect_operations
 from .export import create_html_report, save_operations
 from .models import Operation
+from .rules import load_rules
 from .vtt import parse_vtt
 
 
@@ -20,6 +21,7 @@ def analyze_transcript(
     gemini_api_key: str = "",
     minimum_confidence: float = 0.50,
     video_path: str = "",
+    rules_path: str | Path = "user_rules.json",
 ) -> list[Operation]:
     transcript = Path(transcript_path)
     output = Path(output_dir)
@@ -27,7 +29,7 @@ def analyze_transcript(
 
     cues = parse_vtt(transcript)
     config = DetectionConfig(target_speaker=target_speaker, minimum_confidence=minimum_confidence)
-    operations = detect_operations(cues, config)
+    operations = detect_operations(cues, config, rules=load_rules(rules_path))
 
     if provider in {"ollama", "gemini"}:
         if not model:

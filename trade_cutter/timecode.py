@@ -3,9 +3,7 @@ from __future__ import annotations
 import re
 
 
-_TIMESTAMP_RE = re.compile(
-    r"^(?:(?P<h>\d{1,3}):)?(?P<m>\d{1,2}):(?P<s>\d{1,2})(?:[\.,](?P<ms>\d{1,3}))?$"
-)
+_SECONDS_RE = re.compile(r"^\d+(?:[\.,]\d{1,3})?$")
 
 
 def parse_timecode(value: str | int | float | None) -> float | None:
@@ -20,15 +18,33 @@ def parse_timecode(value: str | int | float | None) -> float | None:
     if raw.replace(".", "", 1).isdigit():
         return max(0.0, float(raw))
 
-    match = _TIMESTAMP_RE.match(raw)
-    if not match:
-        raise ValueError(f"Timestamp inválido: {value!r}")
+    parts = raw.split(":")
+    if len(parts) == 2:
+        hours_text = "0"
+        minutes_text, seconds_text = parts
+    elif len(parts) == 3:
+        hours_text, minutes_text, seconds_text = parts
+    else:
+        raise ValueError(f"Horário inválido: {value!r}. Use HH:MM:SS.")
 
-    hours = int(match.group("h") or 0)
-    minutes = int(match.group("m") or 0)
-    seconds = int(match.group("s") or 0)
-    milliseconds = (match.group("ms") or "0").ljust(3, "0")[:3]
-    return max(0.0, hours * 3600 + minutes * 60 + seconds + int(milliseconds) / 1000)
+    hours_text = hours_text or "0"
+    minutes_text = minutes_text or "0"
+    seconds_text = seconds_text or "0"
+    if not hours_text.isdigit() or not minutes_text.isdigit() or not _SECONDS_RE.match(seconds_text):
+        raise ValueError(f"Horário inválido: {value!r}. Use apenas números e dois-pontos.")
+
+    hours = int(hours_text)
+    minutes = int(minutes_text)
+    seconds = float(seconds_text.replace(",", "."))
+    return max(0.0, hours * 3600 + minutes * 60 + seconds)
+
+
+def normalize_timecode(value: str | int | float | None) -> str:
+    """Return a permissive user value in canonical HH:MM:SS form."""
+    parsed = parse_timecode(value)
+    if parsed is None:
+        return ""
+    return format_timecode(parsed, milliseconds=not float(parsed).is_integer())
 
 
 def format_timecode(seconds: float | int | None, milliseconds: bool = False) -> str:
