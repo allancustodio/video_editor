@@ -288,6 +288,18 @@ No editor de cenas, cada fonte visível possui controles para:
 - zoom e posição horizontal/vertical do professor;
 - alinhamento do gráfico à esquerda, ao centro ou à direita;
 - zoom e ajuste fino horizontal/vertical do gráfico;
+- áudio por cena (professor, tela ou silêncio);
+- velocidade por cena em 1×, 2×, 5×, 10×, 15×, 20×, 25×, 50× ou 100×, além do valor calculado pela sugestão;
+- legendas normais ou com highlight dourado por palavra, com filtro opcional pelo apresentador;
+- preset de gráfico acelerado e cálculo da duração resultante;
+- VTT completo, SRT das legendas e mapa edit.json gerados junto do MP4;
+- sugestão sob demanda limitada ao corte atual, procurando `stop`, `lote`, `parcial`, `alvo`, `porcento` e `gain`;
+- aprovação individual de cada ocorrência, mostrando horário e frase completa do apresentador;
+- contexto configurável antes/depois das falas relevantes (3 segundos por padrão);
+- aceleração automática dos intervalos sem fala relevante para cerca de 5 segundos;
+- aprovação individual de saltos quando o intervalo exigiria mais de 100×;
+- cenas sugeridas com professor em cima, Profit mini índice embaixo e gráfico alinhado à direita;
+- cenas aceleradas mudas e sem legendas por padrão, sempre editáveis depois;
 - restauração do enquadramento padrão;
 - cópia do ajuste da cena anterior;
 - aplicação do ajuste às cenas com a mesma composição;
@@ -302,13 +314,24 @@ No editor de cenas, cada fonte visível possui controles para:
 
 ```text
 output/
-├── cuts.json
-├── report.html
-├── video-final.mp4
+├── 2026-08-01_143218_video-final/
+│   ├── 2026-08-01_143218_video-final.mp4
+│   ├── 2026-08-01_143218_video-final.srt
+│   ├── 2026-08-01_143218_video-final.transcript.vtt
+│   ├── 2026-08-01_143218_video-final.edit.json
+│   ├── source.transcript.vtt
+│   ├── cuts.json
+│   ├── report.html
+│   └── project.json
 └── clips/
     ├── 01_01-08-01_Venda_no_indice.mp4
     └── ...
 ```
+
+Cada exportação recebe data e horário no nome da pasta. Se o nome já existir,
+é acrescentado `-02`, `-03` e assim por diante. Use **Abrir projeto exportado**
+na barra lateral para retomar a edição a partir da pasta ou do `project.json`.
+Os vídeos originais não são duplicados; o manifesto guarda seus caminhos.
 
 ## Ajustes manuais
 

@@ -3,7 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .models import OUTPUT_LAYOUT_LABELS, OUTPUT_ORIENTATION_LABELS, SCENE_LAYOUT_LABELS, Operation
+from .models import (
+    OUTPUT_LAYOUT_LABELS,
+    OUTPUT_ORIENTATION_LABELS,
+    SCENE_AUDIO_LABELS,
+    SCENE_LAYOUT_LABELS,
+    Operation,
+)
 from .timecode import format_timecode
 
 
@@ -20,7 +26,7 @@ def save_operations(path: str | Path, operations: list[Operation], transcript_pa
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "version": 4,
+        "version": 6,
         "transcript": transcript_path,
         "operations": [operation.to_dict() for operation in operations],
     }
@@ -51,7 +57,11 @@ def create_html_report(path: str | Path, operations: list[Operation], video_path
         )
         scene_summary = " · ".join(
             f"{format_timecode(scene.start)}–{format_timecode(scene.end)} "
-            f"{SCENE_LAYOUT_LABELS.get(scene.layout, scene.layout)}"
+            f"{SCENE_LAYOUT_LABELS.get(scene.layout, scene.layout)} · "
+            f"{scene.playback_speed:g}× · "
+            f"{SCENE_AUDIO_LABELS.get(scene.audio_mode, scene.audio_mode)} · "
+            f"legendas {'sim' if scene.subtitles_enabled else 'não'} · "
+            f"{'salto removido' if scene.skip else 'incluída'}"
             for scene in operation.ensure_scenes()
         )
         orientation = OUTPUT_ORIENTATION_LABELS.get(

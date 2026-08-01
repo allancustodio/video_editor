@@ -1,31 +1,31 @@
 {
-  "version": 4,
+  "version": 6,
   "transcript": "C:\\Users\\allan\\OneDrive\\Vídeos\\Aulas\\2026\\07 Julho\\27 Julho 2026\\GMT20260727-115333_Recording.transcript.vtt",
   "operations": [
     {
-      "id": "manual-5ebce0d8ee",
-      "title": "Corte 01:24:27",
-      "asset": "índice",
+      "id": "manual-b7fd8723bb",
+      "title": "Corte 03:11:05",
+      "asset": "",
       "direction": "",
       "setup_start": null,
-      "entry_time": 5067.0,
-      "operation_end": 5482.0,
-      "cut_start": 5067.0,
-      "cut_end": 5474.0,
+      "entry_time": 11465.0,
+      "operation_end": 13505.0,
+      "cut_start": 11465.0,
+      "cut_end": 13505.0,
       "result": "corte manual",
       "confidence": 1.0,
       "evidence": [
-        "Deixa eu comentar um negócio que jogou rápido, que a gente estava conversando."
+        "Funcionou aí, pessoal. Aí, se ele estopar"
       ],
       "event_times": [
-        5067.0
+        11465.0
       ],
       "selected": true,
       "source": "manual",
       "crop_area": "profit_index",
       "crop_x": 0.5,
       "crop_y": 0.0,
-      "crop_width": 0.25,
+      "crop_width": 0.305,
       "crop_height": 1.0,
       "layout_mode": "original",
       "layout_switch_time": null,
@@ -33,9 +33,9 @@
       "output_orientation": "vertical",
       "scenes": [
         {
-          "id": "scene-1",
-          "start": 5067.0,
-          "end": 5137.0,
+          "id": "auto-1-1-11465000",
+          "start": 11465.0,
+          "end": 11489.27,
           "layout": "professor_top",
           "professor_zoom": 1.0,
           "professor_x": 0.0,
@@ -43,20 +43,62 @@
           "graph_zoom": 1.0,
           "graph_x": 0.0,
           "graph_y": 0.0,
-          "graph_alignment": "right"
+          "graph_alignment": "right",
+          "playback_speed": 2.43,
+          "audio_mode": "mute",
+          "subtitles_enabled": false,
+          "skip": false
         },
         {
-          "id": "scene-5137000-2",
-          "start": 5137.0,
-          "end": 5474.0,
-          "layout": "professor_full",
+          "id": "auto-2-1-11489270",
+          "start": 11489.27,
+          "end": 11501.6,
+          "layout": "professor_top",
           "professor_zoom": 1.0,
           "professor_x": 0.0,
           "professor_y": 0.0,
           "graph_zoom": 1.0,
           "graph_x": 0.0,
           "graph_y": 0.0,
-          "graph_alignment": "center"
+          "graph_alignment": "right",
+          "playback_speed": 1.0,
+          "audio_mode": "project",
+          "subtitles_enabled": true,
+          "skip": false
+        },
+        {
+          "id": "auto-3-1-11501600",
+          "start": 11501.6,
+          "end": 13487.38,
+          "layout": "professor_top",
+          "professor_zoom": 1.0,
+          "professor_x": 0.0,
+          "professor_y": 0.0,
+          "graph_zoom": 1.0,
+          "graph_x": 0.0,
+          "graph_y": 0.0,
+          "graph_alignment": "right",
+          "playback_speed": 20.0,
+          "audio_mode": "mute",
+          "subtitles_enabled": false,
+          "skip": false
+        },
+        {
+          "id": "auto-4-1-13487380",
+          "start": 13487.38,
+          "end": 13505.0,
+          "layout": "professor_top",
+          "professor_zoom": 1.0,
+          "professor_x": 0.0,
+          "professor_y": 0.0,
+          "graph_zoom": 1.0,
+          "graph_x": 0.0,
+          "graph_y": 0.0,
+          "graph_alignment": "right",
+          "playback_speed": 1.0,
+          "audio_mode": "project",
+          "subtitles_enabled": true,
+          "skip": false
         }
       ]
     }

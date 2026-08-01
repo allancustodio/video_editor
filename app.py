@@ -12,7 +12,7 @@ import streamlit as st
 
 from trade_cutter.ai import refine_operations
 from trade_cutter.detector import DetectionConfig, detect_operations
-from trade_cutter.export import create_html_report, save_operations
+from trade_cutter.export import create_html_report, load_operations, save_operations
 from trade_cutter.ffmpeg import (
     capture_frame,
     capture_scene_frame,
@@ -25,9 +25,20 @@ from trade_cutter.ffmpeg import (
 from trade_cutter.models import (
     GRAPH_ALIGNMENT_LABELS,
     OUTPUT_ORIENTATION_LABELS,
+    SCENE_AUDIO_LABELS,
     SCENE_LAYOUT_LABELS,
+    SCENE_SPEED_OPTIONS,
     Operation,
     Scene,
+)
+from trade_cutter.project import (
+    copy_source_transcript,
+    create_project_directory,
+    load_project_manifest,
+    project_video_path,
+    resolve_project_file,
+    write_export_error,
+    write_project_manifest,
 )
 from trade_cutter.library import load_user_config, save_user_config, scan_recordings
 from trade_cutter.rules import (
@@ -38,6 +49,13 @@ from trade_cutter.rules import (
     rules_from_records,
     save_rules,
 )
+from trade_cutter.scene_suggestions import (
+    DEFAULT_SCENE_KEYWORDS,
+    build_scene_suggestion_plan,
+    materialize_suggestions,
+    suggest_scenes,
+)
+from trade_cutter.sidecars import sidecar_paths
 from trade_cutter.timecode import format_timecode, normalize_timecode, parse_timecode
 from trade_cutter.vtt import parse_vtt, search_cues, transcript_between
 
@@ -78,6 +96,10 @@ RULE_CATEGORY_LABELS = {
 LABEL_TO_RULE_CATEGORY = {label: key for key, label in RULE_CATEGORY_LABELS.items()}
 RULE_MODE_LABELS = {"literal": "Texto simples", "regex": "Regex"}
 LABEL_TO_RULE_MODE = {label: key for key, label in RULE_MODE_LABELS.items()}
+SUBTITLE_STYLE_LABELS = {
+    "normal": "Normal",
+    "highlight": "Highlight dourado",
+}
 SOURCE_PREVIEW_MAX_SECONDS = 120.0
 
 
@@ -94,6 +116,10 @@ def _set_scene_widget_values(operation: Operation, scene: Scene) -> None:
         "graph_x": int(round(scene.graph_x)),
         "graph_y": int(round(scene.graph_y)),
         "graph_alignment": scene.graph_alignment,
+        "playback_speed": float(scene.playback_speed),
+        "audio_mode": scene.audio_mode,
+        "subtitles_enabled": bool(scene.subtitles_enabled),
+        "skip": bool(scene.skip),
     }
     for field, value in values.items():
         st.session_state[_scene_widget_key(operation, scene, field)] = value
@@ -120,6 +146,10 @@ def _scene_signature(
     scene: Scene,
     orientation: str,
     professor_sync_offset: float,
+    audio_source: str,
+    subtitles_enabled: bool,
+    subtitle_speaker: str,
+    subtitle_style: str,
 ) -> tuple:
     return (
         operation.id,
@@ -134,6 +164,10 @@ def _scene_signature(
         scene.graph_x,
         scene.graph_y,
         scene.graph_alignment,
+        scene.playback_speed,
+        scene.audio_mode,
+        scene.subtitles_enabled,
+        scene.skip,
         operation.crop_area,
         operation.crop_x,
         operation.crop_y,
@@ -141,7 +175,214 @@ def _scene_signature(
         operation.crop_height,
         orientation,
         professor_sync_offset,
+        audio_source,
+        subtitles_enabled,
+        subtitle_speaker,
+        subtitle_style,
     )
+
+
+def _render_scene_suggestion_panel(
+    operation: Operation,
+    *,
+    cues,
+    target_speaker: str,
+) -> None:
+    state_key = f"scene_suggestion_plan_{operation.id}"
+    flash_key = f"scene_suggestion_flash_{operation.id}"
+    if st.session_state.pop(flash_key, False):
+        st.success("A proposta foi aplicada. Todas as cenas continuam editáveis.")
+
+    with st.expander("Sugerir cenas pela transcrição", expanded=False):
+        st.caption(
+            "A análise só roda quando você clicar no botão e fica limitada ao início e fim "
+            "deste corte. Nada é alterado até você revisar e aplicar a proposta."
+        )
+        first, second, third, fourth, fifth = st.columns(5)
+        before = first.number_input(
+            "Contexto antes (s)", 0.0, 30.0, 3.0, 0.5,
+            key=f"suggestion_before_{operation.id}",
+        )
+        after = second.number_input(
+            "Contexto depois (s)", 0.0, 30.0, 3.0, 0.5,
+            key=f"suggestion_after_{operation.id}",
+        )
+        target_duration = third.number_input(
+            "Alvo acelerado (s)", 1.0, 30.0, 5.0, 0.5,
+            key=f"suggestion_target_{operation.id}",
+        )
+        minimum_gap = fourth.number_input(
+            "Intervalo mínimo (s)", 1.0, 120.0, 12.0, 1.0,
+            key=f"suggestion_min_gap_{operation.id}",
+        )
+        max_speed = fifth.number_input(
+            "Velocidade máxima", 2.0, 100.0, 100.0, 1.0,
+            key=f"suggestion_max_speed_v2_{operation.id}",
+        )
+
+        if st.button(
+            "Analisar somente este corte",
+            key=f"analyze_scene_suggestions_{operation.id}",
+            type="primary",
+        ):
+            if not cues:
+                st.warning("Carregue uma transcrição VTT antes de analisar as falas.")
+            else:
+                try:
+                    plan = suggest_scenes(
+                        operation,
+                        cues,
+                        target_speaker=target_speaker,
+                        context_before=before,
+                        context_after=after,
+                        target_fast_duration=target_duration,
+                        minimum_gap=minimum_gap,
+                        max_speed=max_speed,
+                    )
+                    st.session_state[state_key] = {
+                        "bounds": (operation.cut_start, operation.cut_end),
+                        "analysis": plan,
+                        "target_duration": float(target_duration),
+                        "minimum_gap": float(minimum_gap),
+                        "max_speed": float(max_speed),
+                    }
+                    for key in list(st.session_state):
+                        if key.startswith(f"keep_keyword_occurrence_{operation.id}_"):
+                            st.session_state.pop(key, None)
+                except ValueError as error:
+                    st.error(str(error))
+
+        proposal = st.session_state.get(state_key)
+        if proposal and proposal.get("bounds") != (operation.cut_start, operation.cut_end):
+            st.session_state.pop(state_key, None)
+            proposal = None
+            st.info("Os limites do corte mudaram. Gere uma nova proposta para estes horários.")
+        if not proposal:
+            return
+
+        analysis = proposal["analysis"]
+        st.caption(
+            "Palavras procuradas: "
+            + ", ".join(DEFAULT_SCENE_KEYWORDS)
+            + ". Variações de plural, “por cento” e % também são reconhecidas."
+        )
+        selected_occurrence_ids: set[str] = set()
+        if analysis.occurrences:
+            st.markdown("**Escolha as frases que devem permanecer em 1×:**")
+            for occurrence in analysis.occurrences:
+                keep_key = (
+                    f"keep_keyword_occurrence_{operation.id}_{occurrence.id}"
+                )
+                if st.checkbox(
+                    (
+                        f"{format_timecode(occurrence.cue_start)} · "
+                        f"{', '.join(occurrence.keywords)} · {occurrence.text}"
+                    ),
+                    value=True,
+                    key=keep_key,
+                    help=(
+                        "Desmarcada, esta fala não cria uma cena em 1× e continua "
+                        "no trecho acelerado ao redor; nenhum conteúdo é removido."
+                    ),
+                ):
+                    selected_occurrence_ids.add(occurrence.id)
+        else:
+            st.warning(
+                f'Nenhuma das palavras foi encontrada nas falas de “{target_speaker}”. '
+                "Revise com atenção antes de aplicar."
+            )
+
+        plan = build_scene_suggestion_plan(
+            operation,
+            analysis.occurrences,
+            selected_occurrence_ids=selected_occurrence_ids,
+            target_fast_duration=proposal["target_duration"],
+            minimum_gap=proposal["minimum_gap"],
+            max_speed=proposal["max_speed"],
+        )
+        st.markdown(
+            f"**Proposta atual:** {len(plan.scenes)} blocos · "
+            f"{plan.selected_occurrence_count}/{plan.relevant_cue_count} frases em 1× · "
+            f"{plan.matched_keyword_count} palavras-chave selecionadas"
+        )
+        kind_labels = {
+            "normal": "Normal",
+            "accelerated": "Acelerada",
+            "jump": "Salto sugerido",
+        }
+        rows = []
+        for index, suggestion in enumerate(plan.scenes):
+            final_duration = (
+                "depende da aprovação"
+                if suggestion.kind == "jump"
+                else format_timecode(suggestion.output_duration, milliseconds=True)
+            )
+            rows.append(
+                {
+                    "#": index + 1,
+                    "Início": format_timecode(suggestion.start),
+                    "Fim": format_timecode(suggestion.end),
+                    "Tipo": kind_labels[suggestion.kind],
+                    "Velocidade": (
+                        f"{suggestion.speed:.2f}× necessária"
+                        if suggestion.kind == "jump"
+                        else f"{suggestion.speed:.2f}×"
+                    ),
+                    "Duração final": final_duration,
+                    "Motivo": suggestion.reason,
+                }
+            )
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+        approved_jumps: set[int] = set()
+        for index, suggestion in enumerate(plan.scenes):
+            if suggestion.kind != "jump":
+                continue
+            if st.checkbox(
+                (
+                    f"Aprovar remoção do bloco {index + 1} · "
+                    f"{format_timecode(suggestion.start)}–{format_timecode(suggestion.end)}"
+                ),
+                value=False,
+                key=(
+                    f"approve_scene_jump_{operation.id}_"
+                    f"{int(suggestion.start * 1000)}_{int(suggestion.end * 1000)}"
+                ),
+                help=(
+                    f"Sem aprovação, este intervalo será mantido em "
+                    f"{proposal['max_speed']:g}×, sem áudio e sem legendas."
+                ),
+            ):
+                approved_jumps.add(index)
+
+        apply_column, cancel_column = st.columns(2)
+        if apply_column.button(
+            "Aplicar proposta às cenas",
+            key=f"apply_scene_suggestions_{operation.id}",
+            width="stretch",
+        ):
+            materialize_suggestions(
+                operation,
+                plan.scenes,
+                approved_jumps=approved_jumps,
+                max_speed=proposal["max_speed"],
+            )
+            operation.crop_area = "profit_index"
+            apply_crop_preset(operation, get_crop_presets())
+            st.session_state.pop(state_key, None)
+            st.session_state[f"selected_scene_{operation.id}"] = 0
+            st.session_state["refresh_operations_editor"] = True
+            st.session_state.pop("scene_frame_preview", None)
+            st.session_state.pop("scene_video_preview", None)
+            st.session_state[flash_key] = True
+            st.rerun()
+        if cancel_column.button(
+            "Descartar proposta",
+            key=f"discard_scene_suggestions_{operation.id}",
+            width="stretch",
+        ):
+            st.session_state.pop(state_key, None)
+            st.rerun()
 
 
 def render_scene_editor(
@@ -152,6 +393,11 @@ def render_scene_editor(
     orientation: str,
     professor_sync_offset: float,
     audio_source: str,
+    cues,
+    subtitles_enabled: bool,
+    subtitle_speaker: str,
+    subtitle_style: str,
+    target_speaker: str,
     ffmpeg_path: str,
 ) -> None:
     st.markdown("#### Cenas deste trecho")
@@ -196,6 +442,11 @@ def render_scene_editor(
 
     scenes = sorted(operation.ensure_scenes(), key=lambda item: (item.start, item.end))
     operation.scenes = scenes
+    _render_scene_suggestion_panel(
+        operation,
+        cues=cues,
+        target_speaker=target_speaker,
+    )
     st.caption(
         "Dividir uma cena troca apenas a composição. Use “Começar vídeo aqui” "
         "quando quiser descartar tudo o que vem antes do horário informado."
@@ -206,7 +457,12 @@ def render_scene_editor(
             "#": index + 1,
             "Início na aula": format_timecode(scene.start),
             "Fim na aula": format_timecode(scene.end),
-            "Duração": format_timecode(scene.end - scene.start),
+            "Duração original": format_timecode(scene.end - scene.start),
+            "Duração final": format_timecode(scene.output_duration, milliseconds=True),
+            "Estado": "Salto (não exporta)" if scene.skip else "Incluída",
+            "Velocidade": "—" if scene.skip else f"{scene.playback_speed:g}×",
+            "Áudio": SCENE_AUDIO_LABELS.get(scene.audio_mode, scene.audio_mode),
+            "Legendas": "Sim" if scene.subtitles_enabled else "Não",
             "Composição": SCENE_LAYOUT_LABELS[scene.layout],
         }
         for index, scene in enumerate(scenes)
@@ -278,6 +534,7 @@ def render_scene_editor(
         format_func=lambda index: (
             f"Cena {index + 1} · {format_timecode(scenes[index].start)}–"
             f"{format_timecode(scenes[index].end)} · {SCENE_LAYOUT_LABELS[scenes[index].layout]}"
+            f"{' · SALTO' if scenes[index].skip else ''}"
         ),
         key=selected_scene_key,
     )
@@ -289,6 +546,58 @@ def render_scene_editor(
         key=f"scene_layout_{operation.id}_{scene.id}",
     )
     scene.layout = next(key for key, label in SCENE_LAYOUT_LABELS.items() if label == layout_label)
+
+    if st.button(
+        "Aplicar preset · Gráfico acelerado",
+        key=f"preset_fast_graph_{operation.id}_{scene.id}",
+        help="Define 10×, silêncio e legendas desligadas sem alterar a composição.",
+    ):
+        scene.playback_speed = 10.0
+        scene.audio_mode = "mute"
+        scene.subtitles_enabled = False
+        _set_scene_widget_values(operation, scene)
+        st.rerun()
+
+    settings_speed, settings_audio, settings_subtitles, settings_skip = st.columns(4)
+    scene.playback_speed = round(float(scene.playback_speed), 2)
+    speed_options = sorted(set((*SCENE_SPEED_OPTIONS, scene.playback_speed)))
+    scene.playback_speed = float(settings_speed.selectbox(
+        "Velocidade da cena",
+        speed_options,
+        index=speed_options.index(scene.playback_speed),
+        format_func=lambda value: f"{value:g}×",
+        key=_scene_widget_key(operation, scene, "playback_speed"),
+    ))
+    if scene.audio_mode not in SCENE_AUDIO_LABELS:
+        scene.audio_mode = "project"
+    scene.audio_mode = settings_audio.selectbox(
+        "Áudio da cena",
+        list(SCENE_AUDIO_LABELS),
+        index=list(SCENE_AUDIO_LABELS).index(scene.audio_mode),
+        format_func=lambda value: SCENE_AUDIO_LABELS[value],
+        key=_scene_widget_key(operation, scene, "audio_mode"),
+    )
+    scene.subtitles_enabled = settings_subtitles.checkbox(
+        "Legendas nesta cena",
+        value=bool(scene.subtitles_enabled),
+        key=_scene_widget_key(operation, scene, "subtitles_enabled"),
+        disabled=not subtitles_enabled,
+        help="A opção global de legendas também precisa estar ativada.",
+    )
+    scene.skip = settings_skip.checkbox(
+        "Remover do vídeo (salto)",
+        value=bool(scene.skip),
+        key=_scene_widget_key(operation, scene, "skip"),
+        help="O intervalo permanece no projeto, mas não será exportado.",
+    )
+    st.caption(
+        f"Duração: {format_timecode(scene.end - scene.start, milliseconds=True)} original "
+        f"→ {format_timecode(scene.output_duration, milliseconds=True)} no vídeo final."
+    )
+    if scene.playback_speed >= 5 and scene.audio_mode != "mute":
+        st.warning("Em 5× ou mais, o áudio costuma ficar incompreensível. Considere usar Sem áudio.")
+    if not subtitles_enabled:
+        st.caption("As legendas globais estão desligadas; a preferência desta cena foi preservada.")
 
     shows_professor = scene.layout != "graph_full"
     shows_graph = scene.layout != "professor_full"
@@ -355,6 +664,10 @@ def render_scene_editor(
         scene.professor_x = scene.professor_y = 0.0
         scene.graph_x = scene.graph_y = 0.0
         scene.graph_alignment = "center"
+        scene.playback_speed = 1.0
+        scene.audio_mode = "project"
+        scene.subtitles_enabled = True
+        scene.skip = False
         _set_scene_widget_values(operation, scene)
         st.rerun()
     if copy_column.button(
@@ -370,6 +683,9 @@ def render_scene_editor(
         scene.graph_x = previous.graph_x
         scene.graph_y = previous.graph_y
         scene.graph_alignment = previous.graph_alignment
+        scene.playback_speed = previous.playback_speed
+        scene.audio_mode = previous.audio_mode
+        scene.subtitles_enabled = previous.subtitles_enabled
         _set_scene_widget_values(operation, scene)
         st.rerun()
     if apply_column.button("Aplicar às iguais", key=f"apply_scene_{operation.id}_{scene.id}"):
@@ -382,8 +698,11 @@ def render_scene_editor(
                 other.graph_x = scene.graph_x
                 other.graph_y = scene.graph_y
                 other.graph_alignment = scene.graph_alignment
+                other.playback_speed = scene.playback_speed
+                other.audio_mode = scene.audio_mode
+                other.subtitles_enabled = scene.subtitles_enabled
                 _set_scene_widget_values(operation, other)
-        st.success("Enquadramento aplicado às cenas com a mesma composição.")
+        st.success("Configuração aplicada às cenas com a mesma composição.")
     if remove_column.button(
         "Remover cena",
         key=f"remove_scene_{operation.id}_{scene.id}",
@@ -398,7 +717,16 @@ def render_scene_editor(
         st.session_state[f"selected_scene_{operation.id}"] = max(0, selected_index - 1)
         st.rerun()
 
-    signature = _scene_signature(operation, scene, orientation, professor_sync_offset)
+    signature = _scene_signature(
+        operation,
+        scene,
+        orientation,
+        professor_sync_offset,
+        audio_source,
+        subtitles_enabled,
+        subtitle_speaker,
+        subtitle_style,
+    )
     if st.button(
         "Atualizar prévia da cena",
         type="primary",
@@ -452,6 +780,9 @@ def render_scene_editor(
                     ffmpeg_path=ffmpeg_path,
                     professor_sync_offset=professor_sync_offset,
                     audio_source=audio_source,
+                    cues=cues if subtitles_enabled else None,
+                    subtitle_speaker=subtitle_speaker,
+                    subtitle_style=subtitle_style,
                 )
             st.session_state["scene_video_preview"] = {
                 "path": str(preview_target),
@@ -797,8 +1128,99 @@ def clear_loaded_recording_state() -> None:
             st.session_state.pop(key, None)
 
 
+def load_exported_project(path: str) -> Path:
+    manifest_path, manifest = load_project_manifest(path)
+    files = manifest["files"]
+    cuts_path = resolve_project_file(manifest_path, files.get("cuts"))
+    if cuts_path is None or not cuts_path.exists():
+        raise FileNotFoundError("O cuts.json do projeto não foi encontrado.")
+
+    source_transcript = resolve_project_file(
+        manifest_path,
+        files.get("source_transcript"),
+    )
+    if source_transcript is None or not source_transcript.exists():
+        source_transcript = resolve_project_file(
+            manifest_path,
+            manifest.get("sources", {}).get("transcript"),
+        )
+
+    loaded_operations = load_operations(cuts_path)
+    loaded_cues = []
+    if source_transcript is not None and source_transcript.exists():
+        loaded_cues = parse_vtt(source_transcript)
+
+    clear_loaded_recording_state()
+    st.session_state["operations"] = loaded_operations
+    if source_transcript is not None and source_transcript.exists():
+        st.session_state["source"] = str(source_transcript)
+        st.session_state["cues"] = loaded_cues
+        st.session_state["transcript_path_input"] = str(source_transcript)
+    else:
+        st.session_state["source"] = ""
+        st.session_state["cues"] = []
+        st.session_state["transcript_path_input"] = ""
+
+    sources = manifest.get("sources", {})
+    st.session_state["video_path_input"] = str(sources.get("screen_video", ""))
+    st.session_state["professor_video_path_input"] = str(
+        sources.get("professor_video", "")
+    )
+    settings = manifest.get("settings", {})
+    widget_generation = st.session_state.get("project_widget_generation", 0) + 1
+    st.session_state["project_widget_generation"] = widget_generation
+    st.session_state[f"target_speaker_input_{widget_generation}"] = str(
+        settings.get("target_speaker", "RAFAEL FOSSALUSSA")
+    )
+    orientation = str(settings.get("orientation", "vertical"))
+    st.session_state[f"final_output_orientation_label_{widget_generation}"] = (
+        OUTPUT_ORIENTATION_LABELS.get(orientation, OUTPUT_ORIENTATION_LABELS["vertical"])
+    )
+    st.session_state[f"final_professor_sync_offset_{widget_generation}"] = float(
+        settings.get("professor_sync_offset", 0.0)
+    )
+    st.session_state[f"final_audio_source_label_{widget_generation}"] = (
+        "Vídeo da tela"
+        if settings.get("audio_source") == "screen"
+        else "Vídeo do professor"
+    )
+    st.session_state[f"final_subtitles_enabled_{widget_generation}"] = bool(
+        settings.get("subtitles_enabled", True)
+    )
+    st.session_state[f"final_subtitles_only_presenter_{widget_generation}"] = bool(
+        settings.get("subtitles_only_presenter", True)
+    )
+    subtitle_style = str(settings.get("subtitle_style", "normal"))
+    st.session_state[f"final_subtitle_style_label_{widget_generation}"] = (
+        SUBTITLE_STYLE_LABELS.get(subtitle_style, SUBTITLE_STYLE_LABELS["normal"])
+    )
+    st.session_state["transcript_upload_generation"] = (
+        st.session_state.get("transcript_upload_generation", 0) + 1
+    )
+    st.session_state["loaded_project_manifest"] = str(manifest_path)
+    return manifest_path
+
+
 with st.sidebar:
     st.header("Configuração")
+    with st.expander("Abrir projeto exportado", expanded=False):
+        project_path = st.text_input(
+            "Pasta do projeto ou project.json",
+            key="project_path_input",
+            placeholder=r"C:\Videos\output\2026-08-01_143218_video-final",
+        )
+        if st.button("Abrir projeto", width="stretch", disabled=not project_path.strip()):
+            try:
+                loaded_manifest = load_exported_project(project_path)
+                st.session_state["project_loaded_message"] = (
+                    f"Projeto carregado: {loaded_manifest.parent.name}"
+                )
+            except Exception as error:
+                st.error(str(error))
+        loaded_message = st.session_state.pop("project_loaded_message", "")
+        if loaded_message:
+            st.success(loaded_message)
+
     st.subheader("Biblioteca de gravações")
     user_config = load_user_config()
     st.session_state.setdefault(
@@ -916,7 +1338,13 @@ with st.sidebar:
         value=default_ffmpeg_path(),
         help="O FFmpeg instalado pelo WinGet já é preenchido como padrão deste projeto.",
     )
-    target_speaker = st.text_input("Apresentador a detectar", value="RAFAEL FOSSALUSSA")
+    project_widget_generation = st.session_state.get("project_widget_generation", 0)
+    target_speaker_key = f"target_speaker_input_{project_widget_generation}"
+    st.session_state.setdefault(target_speaker_key, "RAFAEL FOSSALUSSA")
+    target_speaker = st.text_input(
+        "Apresentador a detectar",
+        key=target_speaker_key,
+    )
     minimum_confidence = st.slider("Confiança mínima", 0.30, 0.95, 0.50, 0.05)
 
     provider_label = st.selectbox("Análise", ["Regras locais", "Ollama local", "Gemini API"])
@@ -1309,6 +1737,8 @@ with st.container(border=True):
             st.warning(str(error))
 
 if operations:
+    if st.session_state.pop("refresh_operations_editor", False):
+        st.session_state.pop("operations_editor", None)
     for operation_index, existing_operation in enumerate(operations, 1):
         if existing_operation.sequence_order <= 0:
             existing_operation.sequence_order = operation_index
@@ -1432,29 +1862,74 @@ if operations:
     audio_source = "professor"
     st.markdown("### 3. Monte as cenas e o vídeo final")
     project_left, project_middle, project_right = st.columns(3)
+    orientation_widget_key = f"final_output_orientation_label_{project_widget_generation}"
+    sync_widget_key = f"final_professor_sync_offset_{project_widget_generation}"
+    audio_widget_key = f"final_audio_source_label_{project_widget_generation}"
+    subtitles_widget_key = f"final_subtitles_enabled_{project_widget_generation}"
+    subtitle_style_widget_key = f"final_subtitle_style_label_{project_widget_generation}"
+    presenter_subtitles_widget_key = (
+        f"final_subtitles_only_presenter_{project_widget_generation}"
+    )
+    st.session_state.setdefault(
+        orientation_widget_key,
+        OUTPUT_ORIENTATION_LABELS["vertical"],
+    )
+    st.session_state.setdefault(sync_widget_key, 0.0)
+    st.session_state.setdefault(audio_widget_key, "Vídeo do professor")
+    st.session_state.setdefault(subtitles_widget_key, True)
+    st.session_state.setdefault(
+        subtitle_style_widget_key,
+        SUBTITLE_STYLE_LABELS["normal"],
+    )
+    st.session_state.setdefault(presenter_subtitles_widget_key, True)
     orientation_label = project_left.radio(
         "Orientação do vídeo final",
         list(OUTPUT_ORIENTATION_LABELS.values()),
         horizontal=True,
-        key="final_output_orientation_label",
+        key=orientation_widget_key,
     )
     orientation = next(
         key for key, label in OUTPUT_ORIENTATION_LABELS.items() if label == orientation_label
     )
     professor_sync_offset = project_middle.number_input(
         "Sincronização do professor (s)",
-        value=0.0,
         step=0.1,
         help="Positivo avança o vídeo do professor.",
-        key="final_professor_sync_offset",
+        key=sync_widget_key,
     )
     audio_label = project_right.radio(
         "Áudio contínuo",
         ["Vídeo do professor", "Vídeo da tela"],
         horizontal=True,
-        key="final_audio_source_label",
+        key=audio_widget_key,
     )
     audio_source = "professor" if audio_label == "Vídeo do professor" else "screen"
+    subtitle_left, subtitle_middle, subtitle_right = st.columns(3)
+    subtitles_enabled = subtitle_left.checkbox(
+        "Gravar legendas no vídeo",
+        key=subtitles_widget_key,
+        help="Usa os textos e horários da transcrição VTT carregada.",
+    )
+    subtitle_style_label = subtitle_middle.selectbox(
+        "Estilo da legenda",
+        list(SUBTITLE_STYLE_LABELS.values()),
+        key=subtitle_style_widget_key,
+        disabled=not subtitles_enabled,
+    )
+    subtitle_style = next(
+        key for key, label in SUBTITLE_STYLE_LABELS.items()
+        if label == subtitle_style_label
+    )
+    subtitles_only_presenter = subtitle_right.checkbox(
+        "Legendar somente o apresentador",
+        key=presenter_subtitles_widget_key,
+        disabled=not subtitles_enabled,
+    )
+    subtitle_speaker = target_speaker if subtitles_only_presenter else ""
+    if subtitles_enabled and subtitles_only_presenter:
+        st.caption(f'As legendas usarão somente as falas identificadas como “{target_speaker}”.')
+    elif subtitles_enabled:
+        st.caption("As falas de todos os participantes presentes no VTT serão legendadas.")
     for item in operations:
         item.output_orientation = orientation
 
@@ -1468,6 +1943,11 @@ if operations:
             orientation=orientation,
             professor_sync_offset=professor_sync_offset,
             audio_source=audio_source,
+            cues=cues,
+            subtitles_enabled=subtitles_enabled,
+            subtitle_speaker=subtitle_speaker,
+            subtitle_style=subtitle_style,
+            target_speaker=target_speaker,
             ffmpeg_path=ffmpeg_path,
         )
 
@@ -1476,9 +1956,10 @@ if operations:
         "contínuo antes de reuni-las em um arquivo."
     )
     final_filename = st.text_input(
-        "Nome do vídeo final",
+        "Nome-base do projeto e do vídeo",
         value="video-final.mp4",
         key="final_video_filename",
+        help="A data e o horário serão adicionados automaticamente à pasta e ao MP4.",
     ).strip()
     final_filename = Path(final_filename or "video-final.mp4").name
     if not final_filename.lower().endswith(".mp4"):
@@ -1499,37 +1980,93 @@ if operations:
             st.success(f"Salvo em {target}")
     with col_export:
         if st.button("4. Exportar vídeo final", type="primary", width="stretch"):
+            project_directory: Path | None = None
             try:
                 if not video_path:
                     raise ValueError("Informe o caminho do vídeo da tela.")
                 if not professor_video_path:
                     raise ValueError("Informe o caminho do vídeo do professor.")
                 find_ffmpeg(ffmpeg_path)
+                project_directory = create_project_directory(output_dir, final_filename)
+                source_transcript_path = st.session_state.get("source", "")
+                cuts_path = save_operations(
+                    project_directory / "cuts.json",
+                    operations,
+                    source_transcript_path,
+                )
+                report_path = create_html_report(
+                    project_directory / "report.html",
+                    operations,
+                    video_path=video_path,
+                )
+                copied_source_transcript = copy_source_transcript(
+                    source_transcript_path,
+                    project_directory,
+                )
                 progress = st.progress(0, text="Preparando...")
 
                 def update(index: int, total: int, message: str) -> None:
                     progress.progress(index / max(total, 1), text=message)
 
+                dated_video_path = project_video_path(project_directory)
                 target = export_final_video(
                     video_path,
                     professor_video_path,
                     operations,
-                    Path(output_dir) / final_filename,
+                    dated_video_path,
                     orientation=orientation,
                     ffmpeg_path=ffmpeg_path,
                     progress=update,
                     professor_sync_offset=professor_sync_offset,
                     audio_source=audio_source,
+                    cues=cues,
+                    burn_subtitles=subtitles_enabled,
+                    subtitle_speaker=subtitle_speaker,
+                    subtitle_style=subtitle_style,
+                    transcript_path=source_transcript_path,
                 )
-                save_operations(
-                    Path(output_dir) / "cuts.json", operations, st.session_state.get("source", "")
-                )
-                create_html_report(
-                    Path(output_dir) / "report.html", operations, video_path=video_path
+                generated_sidecars = sidecar_paths(target)
+                manifest_path = write_project_manifest(
+                    project_directory,
+                    name=project_directory.name,
+                    files={
+                        "video": target,
+                        "transcript": generated_sidecars["transcript"],
+                        "captions": generated_sidecars["captions"],
+                        "edit_map": generated_sidecars["edit_map"],
+                        "cuts": cuts_path,
+                        "report": report_path,
+                        "source_transcript": copied_source_transcript,
+                    },
+                    source_video=video_path,
+                    professor_video=professor_video_path,
+                    source_transcript=source_transcript_path,
+                    settings={
+                        "orientation": orientation,
+                        "professor_sync_offset": professor_sync_offset,
+                        "audio_source": audio_source,
+                        "subtitles_enabled": subtitles_enabled,
+                        "subtitles_only_presenter": subtitles_only_presenter,
+                        "subtitle_speaker": subtitle_speaker,
+                        "subtitle_style": subtitle_style,
+                        "target_speaker": target_speaker,
+                        "scene_keywords": list(DEFAULT_SCENE_KEYWORDS),
+                        "default_crop_area": "profit_index",
+                        "default_layout": "professor_top",
+                        "default_graph_alignment": "right",
+                    },
                 )
                 st.session_state["final_video_path"] = str(target)
-                st.success(f"Vídeo final gerado em {target}")
+                st.success(f"Projeto exportado em {project_directory}")
+                st.caption(
+                    "Arquivos do projeto: "
+                    + " · ".join(path.name for path in generated_sidecars.values())
+                    + f" · {cuts_path.name} · {report_path.name} · {manifest_path.name}"
+                )
             except Exception as error:
+                if project_directory is not None:
+                    error_path = write_export_error(project_directory, error)
+                    st.caption(f"Projeto incompleto registrado em {error_path}")
                 st.error(str(error))
     final_video_path = st.session_state.get("final_video_path")
     if final_video_path and Path(final_video_path).exists():

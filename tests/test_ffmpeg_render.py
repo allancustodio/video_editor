@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import sys
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -10,16 +11,19 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from trade_cutter.ffmpeg import (
+    build_scene_ass,
     capture_scene_frame,
     capture_professor_frame,
     capture_vertical_frame,
     create_preview_clip,
     cut_video,
     export_final_video,
+    render_scene_video,
     scene_filter,
     validate_scene_timeline,
 )
-from trade_cutter.models import Operation, Scene
+from trade_cutter.models import Cue, Operation, Scene
+from trade_cutter.sidecars import write_export_sidecars
 
 
 def operation(*, crop_area: str = "full") -> Operation:
@@ -61,6 +65,35 @@ def rendered_command(op: Operation, **kwargs) -> list[str]:
                 root / "output.mp4",
                 professor_video_path=professor,
                 **kwargs,
+            )
+        return run.call_args.args[0]
+
+
+def rendered_scene_command(
+    scene: Scene,
+    *,
+    cues: list[Cue] | None = None,
+    audio_source: str = "professor",
+) -> list[str]:
+    with TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        screen = root / "screen.mp4"
+        professor = root / "professor.mp4"
+        screen.touch()
+        professor.touch()
+        completed = SimpleNamespace(returncode=0, stderr="")
+        with patch("trade_cutter.ffmpeg.find_ffmpeg", return_value="ffmpeg"), patch(
+            "trade_cutter.ffmpeg.subprocess.run", return_value=completed
+        ) as run:
+            render_scene_video(
+                screen,
+                professor,
+                operation(crop_area="profit_index"),
+                scene,
+                root / "output.mp4",
+                audio_source=audio_source,
+                cues=cues,
+                subtitle_speaker="PROFESSOR",
             )
         return run.call_args.args[0]
 
@@ -260,6 +293,85 @@ def test_scene_graph_can_anchor_the_crop_to_the_right_edge() -> None:
     assert "(iw-ow)*0.900000" in adjusted
 
 
+def test_scene_speed_mute_and_low_memory_render_options() -> None:
+    scene = Scene(
+        "fast",
+        10.0,
+        20.0,
+        "graph_full",
+        playback_speed=10.0,
+        audio_mode="mute",
+        subtitles_enabled=False,
+    )
+    command = rendered_scene_command(scene)
+    filter_complex = command[command.index("-filter_complex") + 1]
+    assert "setpts=(PTS-STARTPTS)/10.000000" in filter_complex
+    assert "anullsrc=channel_layout=stereo:sample_rate=48000" in filter_complex
+    assert command[command.index("-t") + 1] == "1.000"
+    assert command[command.index("-filter_complex_threads") + 1] == "1"
+    assert command[command.index("-threads:v") + 1] == "2"
+    assert command[command.index("-map") + 3] == "[a]"
+
+
+def test_scene_audio_source_and_speed_are_applied_together() -> None:
+    scene = Scene(
+        "fast-audio",
+        10.0,
+        20.0,
+        "professor_full",
+        playback_speed=5.0,
+        audio_mode="screen",
+    )
+    command = rendered_scene_command(scene)
+    filter_complex = command[command.index("-filter_complex") + 1]
+    assert "[0:a:0]aresample=" in filter_complex
+    assert filter_complex.count("atempo=2.000000") == 2
+    assert "atempo=1.250000" in filter_complex
+    assert command[command.index("-t") + 1] == "2.000"
+
+
+def test_scene_ass_filters_speaker_and_retimes_for_speed() -> None:
+    scene = Scene(
+        "captioned",
+        10.0,
+        20.0,
+        "professor_top",
+        playback_speed=2.0,
+    )
+    captions = build_scene_ass(
+        [
+            Cue(1, 11.0, 13.0, "PROFESSOR", "Vamos observar o gráfico."),
+            Cue(2, 12.0, 14.0, "ALUNO", "Conversa paralela."),
+        ],
+        scene,
+        "vertical",
+        speaker="PROFESSOR",
+    )
+    assert "0:00:00.50,0:00:01.50" in captions
+    assert "Vamos observar o gráfico." in captions
+    assert "Conversa paralela." not in captions
+    assert "MarginL, MarginR, MarginV" in captions
+    assert ",1040,1" in captions
+
+
+def test_scene_ass_can_highlight_each_word_in_gold() -> None:
+    scene = Scene("highlighted", 10.0, 20.0, "professor_top")
+    captions = build_scene_ass(
+        [Cue(1, 11.0, 14.0, "PROFESSOR", "Um eu tu")],
+        scene,
+        "vertical",
+        speaker="PROFESSOR",
+        subtitle_style="highlight",
+    )
+
+    assert captions.count("Dialogue:") == 3
+    assert "0:00:01.00,0:00:02.00" in captions
+    assert "0:00:02.00,0:00:03.00" in captions
+    assert "0:00:03.00,0:00:04.00" in captions
+    assert r"{\c&H0023A6F5&\3c&H00040608&\bord3}" in captions
+    assert "&H00DDEBF3" in captions
+
+
 def test_scene_frame_uses_scene_specific_framing() -> None:
     with TemporaryDirectory() as temporary:
         root = Path(temporary)
@@ -336,11 +448,14 @@ def test_final_export_respects_order_and_creates_one_concat() -> None:
         second.id = "second"
         second.title = "Segundo"
         second.sequence_order = 1
-        second.scenes = [Scene("second-scene", 10.0, 20.0, "professor_full")]
+        second.scenes = [
+            Scene("removed-scene", 10.0, 15.0, "graph_full", skip=True),
+            Scene("second-scene", 15.0, 20.0, "professor_full"),
+        ]
         rendered: list[str] = []
 
-        def fake_render(_screen, _professor, op, _scene, target, **_kwargs):
-            rendered.append(op.id)
+        def fake_render(_screen, _professor, op, scene, target, **_kwargs):
+            rendered.append(f"{op.id}:{scene.id}")
             Path(target).touch()
             return Path(target)
 
@@ -352,10 +467,76 @@ def test_final_export_respects_order_and_creates_one_concat() -> None:
                 screen, professor, [first, second], root / "final.mp4"
             )
         assert target == root / "final.mp4"
-        assert rendered == ["second", "first"]
+        assert rendered == ["second:second-scene", "first:first-scene"]
         concat_command = run.call_args.args[0]
         assert concat_command[concat_command.index("-f") + 1] == "concat"
         assert concat_command[-1] == str(target)
+        assert (root / "final.edit.json").exists()
+
+
+def test_export_sidecars_retime_transcript_captions_and_edit_map() -> None:
+    with TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        op = operation()
+        op.cut_start = 10.0
+        op.cut_end = 40.0
+        op.scenes = [
+            Scene(
+                "spoken",
+                10.0,
+                20.0,
+                "professor_top",
+                playback_speed=2.0,
+                audio_mode="professor",
+            ),
+            Scene(
+                "fast",
+                20.0,
+                30.0,
+                "graph_full",
+                playback_speed=10.0,
+                audio_mode="mute",
+                subtitles_enabled=False,
+            ),
+            Scene("removed", 30.0, 40.0, "graph_full", skip=True),
+        ]
+        paths = write_export_sidecars(
+            root / "video-final.mp4",
+            [op],
+            video_path=root / "screen.mp4",
+            professor_video_path=root / "professor.mp4",
+            cues=[
+                Cue(1, 12.0, 14.0, "PROFESSOR", "Fala principal."),
+                Cue(2, 22.0, 24.0, "ALUNO", "Conversa preservada."),
+                Cue(3, 32.0, 34.0, "PROFESSOR", "Fala removida."),
+            ],
+            transcript_path=root / "source.vtt",
+            orientation="vertical",
+            project_audio="professor",
+            professor_sync_offset=0.5,
+            captions_enabled=False,
+            caption_speaker="PROFESSOR",
+        )
+
+        transcript = paths["transcript"].read_text(encoding="utf-8")
+        captions = paths["captions"].read_text(encoding="utf-8")
+        edit_map = json.loads(paths["edit_map"].read_text(encoding="utf-8"))
+
+        assert "00:00:01.000 --> 00:00:02.000" in transcript
+        assert "PROFESSOR: Fala principal." in transcript
+        assert "00:00:05.200 --> 00:00:05.400" in transcript
+        assert "ALUNO: Conversa preservada." in transcript
+        assert "Fala removida." not in transcript
+        assert "00:00:01,000 --> 00:00:02,000" in captions
+        assert "Fala principal." in captions
+        assert "Conversa preservada." not in captions
+        assert paths["captions"].name == "video-final.srt"
+        assert edit_map["output_duration"] == 6.0
+        assert edit_map["segments"][1]["audio"] == "mute"
+        assert edit_map["segments"][1]["source"]["screen_start"] == 20.0
+        assert edit_map["segments"][1]["output"]["start"] == 5.0
+        assert edit_map["segments"][2]["skipped"] is True
+        assert edit_map["segments"][2]["output"]["duration"] == 0.0
 
 
 def main() -> None:
@@ -370,10 +551,15 @@ def main() -> None:
     test_lightweight_preview_is_scaled_and_cached()
     test_scene_filters_support_every_composition_and_orientation()
     test_scene_graph_can_anchor_the_crop_to_the_right_edge()
+    test_scene_speed_mute_and_low_memory_render_options()
+    test_scene_audio_source_and_speed_are_applied_together()
+    test_scene_ass_filters_speaker_and_retimes_for_speed()
+    test_scene_ass_can_highlight_each_word_in_gold()
     test_scene_frame_uses_scene_specific_framing()
     test_scene_timeline_requires_complete_coverage()
     test_exact_cut_bounds_trim_previous_scenes()
     test_final_export_respects_order_and_creates_one_concat()
+    test_export_sidecars_retime_transcript_captions_and_edit_map()
     print("OK: cortes, cinco composições, duas orientações e montagem final.")
 
 

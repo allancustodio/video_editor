@@ -1,0 +1,395 @@
+{
+  "version": 1,
+  "video": "C:\\git\\trade-video-cutter\\output\\2026-08-01_164224_video-final\\video-final.mp4",
+  "source_video": "C:\\Users\\allan\\OneDrive\\Vídeos\\Aulas\\2026\\07 Julho\\27 Julho 2026\\GMT20260727-115333_Recording_as_3840x1080.mp4",
+  "professor_video": "C:\\Users\\allan\\OneDrive\\Vídeos\\Aulas\\2026\\07 Julho\\27 Julho 2026\\GMT20260727-115333_Recording_avo_1280x720.mp4",
+  "transcript_source": "C:\\Users\\allan\\OneDrive\\Vídeos\\Aulas\\2026\\07 Julho\\27 Julho 2026\\GMT20260727-115333_Recording.transcript.vtt",
+  "orientation": "vertical",
+  "project_audio": "professor",
+  "professor_sync_offset": 0.0,
+  "caption_speaker": "RAFAEL FOSSALUSSA",
+  "captions_enabled": false,
+  "output_duration": 212.1979999999997,
+  "segments": [
+    {
+      "operation_id": "manual-b7fd8723bb",
+      "operation_title": "Corte 03:11:05",
+      "scene_id": "auto-1-11465000",
+      "layout": "professor_top",
+      "orientation": "vertical",
+      "source": {
+        "screen_start": 11465.0,
+        "screen_end": 11483.1,
+        "professor_start": 11465.0,
+        "professor_end": 11483.1
+      },
+      "output": {
+        "start": 0.0,
+        "end": 10.0000000000002,
+        "duration": 10.0000000000002
+      },
+      "speed": 1.81,
+      "skipped": false,
+      "audio": "mute",
+      "captions_enabled": false,
+      "crop": {
+        "area": "profit_index",
+        "x": 0.5,
+        "y": 0.0,
+        "width": 0.305,
+        "height": 1.0
+      },
+      "framing": {
+        "professor_zoom": 1.0,
+        "professor_x": 0.0,
+        "professor_y": 0.0,
+        "graph_zoom": 1.0,
+        "graph_x": 0.0,
+        "graph_y": 0.0,
+        "graph_alignment": "right"
+      }
+    },
+    {
+      "operation_id": "manual-b7fd8723bb",
+      "operation_title": "Corte 03:11:05",
+      "scene_id": "auto-2-11483100",
+      "layout": "professor_top",
+      "orientation": "vertical",
+      "source": {
+        "screen_start": 11483.1,
+        "screen_end": 11501.6,
+        "professor_start": 11483.1,
+        "professor_end": 11501.6
+      },
+      "output": {
+        "start": 10.0000000000002,
+        "end": 28.5000000000002,
+        "duration": 18.5
+      },
+      "speed": 1.0,
+      "skipped": false,
+      "audio": "professor",
+      "captions_enabled": false,
+      "crop": {
+        "area": "profit_index",
+        "x": 0.5,
+        "y": 0.0,
+        "width": 0.305,
+        "height": 1.0
+      },
+      "framing": {
+        "professor_zoom": 1.0,
+        "professor_x": 0.0,
+        "professor_y": 0.0,
+        "graph_zoom": 1.0,
+        "graph_x": 0.0,
+        "graph_y": 0.0,
+        "graph_alignment": "right"
+      }
+    },
+    {
+      "operation_id": "manual-b7fd8723bb",
+      "operation_title": "Corte 03:11:05",
+      "scene_id": "auto-3-11501600",
+      "layout": "professor_top",
+      "orientation": "vertical",
+      "source": {
+        "screen_start": 11501.6,
+        "screen_end": 11558.46,
+        "professor_start": 11501.6,
+        "professor_end": 11558.46
+      },
+      "output": {
+        "start": 28.5000000000002,
+        "end": 38.5000000000002,
+        "duration": 10.0
+      },
+      "speed": 5.6859999999998765,
+      "skipped": false,
+      "audio": "mute",
+      "captions_enabled": false,
+      "crop": {
+        "area": "profit_index",
+        "x": 0.5,
+        "y": 0.0,
+        "width": 0.305,
+        "height": 1.0
+      },
+      "framing": {
+        "professor_zoom": 1.0,
+        "professor_x": 0.0,
+        "professor_y": 0.0,
+        "graph_zoom": 1.0,
+        "graph_x": 0.0,
+        "graph_y": 0.0,
+        "graph_alignment": "right"
+      }
+    },
+    {
+      "operation_id": "manual-b7fd8723bb",
+      "operation_title": "Corte 03:11:05",
+      "scene_id": "auto-4-11558460",
+      "layout": "professor_top",
+      "orientation": "vertical",
+      "source": {
+        "screen_start": 11558.46,
+        "screen_end": 11569.83,
+        "professor_start": 11558.46,
+        "professor_end": 11569.83
+      },
+      "output": {
+        "start": 38.5000000000002,
+        "end": 49.870000000001,
+        "duration": 11.3700000000008
+      },
+      "speed": 1.0,
+      "skipped": false,
+      "audio": "professor",
+      "captions_enabled": false,
+      "crop": {
+        "area": "profit_index",
+        "x": 0.5,
+        "y": 0.0,
+        "width": 0.305,
+        "height": 1.0
+      },
+      "framing": {
+        "professor_zoom": 1.0,
+        "professor_x": 0.0,
+        "professor_y": 0.0,
+        "graph_zoom": 1.0,
+        "graph_x": 0.0,
+        "graph_y": 0.0,
+        "graph_alignment": "right"
+      }
+    },
+    {
+      "operation_id": "manual-b7fd8723bb",
+      "operation_title": "Corte 03:11:05",
+      "scene_id": "auto-5-11569830",
+      "layout": "professor_top",
+      "orientation": "vertical",
+      "source": {
+        "screen_start": 11569.83,
+        "screen_end": 11839.53,
+        "professor_start": 11569.83,
+        "professor_end": 11839.53
+      },
+      "output": {
+        "start": 49.870000000001,
+        "end": 63.355000000001034,
+        "duration": 13.485000000000037
+      },
+      "speed": 20.0,
+      "skipped": false,
+      "audio": "mute",
+      "captions_enabled": false,
+      "crop": {
+        "area": "profit_index",
+        "x": 0.5,
+        "y": 0.0,
+        "width": 0.305,
+        "height": 1.0
+      },
+      "framing": {
+        "professor_zoom": 1.0,
+        "professor_x": 0.0,
+        "professor_y": 0.0,
+        "graph_zoom": 1.0,
+        "graph_x": 0.0,
+        "graph_y": 0.0,
+        "graph_alignment": "right"
+      }
+    },
+    {
+      "operation_id": "manual-b7fd8723bb",
+      "operation_title": "Corte 03:11:05",
+      "scene_id": "auto-6-11839530",
+      "layout": "professor_top",
+      "orientation": "vertical",
+      "source": {
+        "screen_start": 11839.53,
+        "screen_end": 11853.41,
+        "professor_start": 11839.53,
+        "professor_end": 11853.41
+      },
+      "output": {
+        "start": 63.355000000001034,
+        "end": 77.23500000000024,
+        "duration": 13.8799999999992
+      },
+      "speed": 1.0,
+      "skipped": false,
+      "audio": "professor",
+      "captions_enabled": false,
+      "crop": {
+        "area": "profit_index",
+        "x": 0.5,
+        "y": 0.0,
+        "width": 0.305,
+        "height": 1.0
+      },
+      "framing": {
+        "professor_zoom": 1.0,
+        "professor_x": 0.0,
+        "professor_y": 0.0,
+        "graph_zoom": 1.0,
+        "graph_x": 0.0,
+        "graph_y": 0.0,
+        "graph_alignment": "right"
+      }
+    },
+    {
+      "operation_id": "manual-b7fd8723bb",
+      "operation_title": "Corte 03:11:05",
+      "scene_id": "auto-7-11853410",
+      "layout": "professor_top",
+      "orientation": "vertical",
+      "source": {
+        "screen_start": 11853.41,
+        "screen_end": 11963.15,
+        "professor_start": 11853.41,
+        "professor_end": 11963.15
+      },
+      "output": {
+        "start": 77.23500000000024,
+        "end": 87.23500000000024,
+        "duration": 10.0
+      },
+      "speed": 10.973999999999979,
+      "skipped": false,
+      "audio": "mute",
+      "captions_enabled": false,
+      "crop": {
+        "area": "profit_index",
+        "x": 0.5,
+        "y": 0.0,
+        "width": 0.305,
+        "height": 1.0
+      },
+      "framing": {
+        "professor_zoom": 1.0,
+        "professor_x": 0.0,
+        "professor_y": 0.0,
+        "graph_zoom": 1.0,
+        "graph_x": 0.0,
+        "graph_y": 0.0,
+        "graph_alignment": "right"
+      }
+    },
+    {
+      "operation_id": "manual-b7fd8723bb",
+      "operation_title": "Corte 03:11:05",
+      "scene_id": "auto-8-11963150",
+      "layout": "professor_top",
+      "orientation": "vertical",
+      "source": {
+        "screen_start": 11963.15,
+        "screen_end": 11980.99,
+        "professor_start": 11963.15,
+        "professor_end": 11980.99
+      },
+      "output": {
+        "start": 87.23500000000024,
+        "end": 105.07500000000039,
+        "duration": 17.840000000000146
+      },
+      "speed": 1.0,
+      "skipped": false,
+      "audio": "professor",
+      "captions_enabled": false,
+      "crop": {
+        "area": "profit_index",
+        "x": 0.5,
+        "y": 0.0,
+        "width": 0.305,
+        "height": 1.0
+      },
+      "framing": {
+        "professor_zoom": 1.0,
+        "professor_x": 0.0,
+        "professor_y": 0.0,
+        "graph_zoom": 1.0,
+        "graph_x": 0.0,
+        "graph_y": 0.0,
+        "graph_alignment": "right"
+      }
+    },
+    {
+      "operation_id": "manual-b7fd8723bb",
+      "operation_title": "Corte 03:11:05",
+      "scene_id": "auto-9-11980990",
+      "layout": "professor_top",
+      "orientation": "vertical",
+      "source": {
+        "screen_start": 11980.99,
+        "screen_end": 13472.45,
+        "professor_start": 11980.99,
+        "professor_end": 13472.45
+      },
+      "output": {
+        "start": 105.07500000000039,
+        "end": 179.64800000000042,
+        "duration": 74.57300000000005
+      },
+      "speed": 20.0,
+      "skipped": false,
+      "audio": "mute",
+      "captions_enabled": false,
+      "crop": {
+        "area": "profit_index",
+        "x": 0.5,
+        "y": 0.0,
+        "width": 0.305,
+        "height": 1.0
+      },
+      "framing": {
+        "professor_zoom": 1.0,
+        "professor_x": 0.0,
+        "professor_y": 0.0,
+        "graph_zoom": 1.0,
+        "graph_x": 0.0,
+        "graph_y": 0.0,
+        "graph_alignment": "right"
+      }
+    },
+    {
+      "operation_id": "manual-b7fd8723bb",
+      "operation_title": "Corte 03:11:05",
+      "scene_id": "auto-10-13472450",
+      "layout": "professor_top",
+      "orientation": "vertical",
+      "source": {
+        "screen_start": 13472.45,
+        "screen_end": 13505.0,
+        "professor_start": 13472.45,
+        "professor_end": 13505.0
+      },
+      "output": {
+        "start": 179.64800000000042,
+        "end": 212.1979999999997,
+        "duration": 32.54999999999927
+      },
+      "speed": 1.0,
+      "skipped": false,
+      "audio": "professor",
+      "captions_enabled": false,
+      "crop": {
+        "area": "profit_index",
+        "x": 0.5,
+        "y": 0.0,
+        "width": 0.305,
+        "height": 1.0
+      },
+      "framing": {
+        "professor_zoom": 1.0,
+        "professor_x": 0.0,
+        "professor_y": 0.0,
+        "graph_zoom": 1.0,
+        "graph_x": 0.0,
+        "graph_y": 0.0,
+        "graph_alignment": "right"
+      }
+    }
+  ]
+}

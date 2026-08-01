@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "name": "2026-08-01_175241_video-final",
+  "created_at": "2026-08-01T18:01:19.882103-03:00",
+  "files": {
+    "video": "2026-08-01_175241_video-final.mp4",
+    "transcript": "2026-08-01_175241_video-final.transcript.vtt",
+    "captions": "2026-08-01_175241_video-final.srt",
+    "edit_map": "2026-08-01_175241_video-final.edit.json",
+    "cuts": "cuts.json",
+    "report": "report.html",
+    "source_transcript": "source.transcript.vtt"
+  },
+  "sources": {
+    "screen_video": "C:\\Users\\allan\\OneDrive\\Vídeos\\Aulas\\2026\\07 Julho\\27 Julho 2026\\GMT20260727-115333_Recording_as_3840x1080.mp4",
+    "professor_video": "C:\\Users\\allan\\OneDrive\\Vídeos\\Aulas\\2026\\07 Julho\\27 Julho 2026\\GMT20260727-115333_Recording_avo_1280x720.mp4",
+    "transcript": "C:\\Users\\allan\\OneDrive\\Vídeos\\Aulas\\2026\\07 Julho\\27 Julho 2026\\GMT20260727-115333_Recording.transcript.vtt"
+  },
+  "settings": {
+    "orientation": "vertical",
+    "professor_sync_offset": 0.0,
+    "audio_source": "professor",
+    "subtitles_enabled": true,
+    "subtitles_only_presenter": true,
+    "subtitle_speaker": "RAFAEL FOSSALUSSA",
+    "subtitle_style": "normal",
+    "target_speaker": "RAFAEL FOSSALUSSA",
+    "scene_keywords": [
+      "stop",
+      "lote",
+      "parcial",
+      "alvo",
+      "porcento",
+      "gain"
+    ],
+    "default_crop_area": "profit_index",
+    "default_layout": "professor_top",
+    "default_graph_alignment": "right"
+  }
+}

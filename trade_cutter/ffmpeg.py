@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import shutil
 import subprocess
 import tempfile
+import textwrap
 from pathlib import Path
 from typing import Callable
 
-from .models import Operation, Scene
+from .models import Cue, Operation, Scene
+from .sidecars import write_export_sidecars
 from .timecode import format_timecode
 
 
@@ -621,7 +624,211 @@ def _scene_box_filter(
     )
 
 
-def scene_filter(operation: Operation, scene: Scene, orientation: str) -> str:
+def _scene_speed(scene: Scene) -> float:
+    return min(max(float(scene.playback_speed or 1.0), 0.1), 100.0)
+
+
+def _ass_time(seconds: float) -> str:
+    total_centiseconds = max(0, int(round(float(seconds) * 100)))
+    hours, remainder = divmod(total_centiseconds, 360000)
+    minutes, remainder = divmod(remainder, 6000)
+    secs, centiseconds = divmod(remainder, 100)
+    return f"{hours}:{minutes:02d}:{secs:02d}.{centiseconds:02d}"
+
+
+def _subtitle_text(value: str, *, width: int) -> str:
+    cleaned = " ".join(value.replace("{", "").replace("}", "").split())
+    lines = textwrap.wrap(cleaned, width=width, break_long_words=False, break_on_hyphens=False)
+    if not lines:
+        return ""
+    if len(lines) > 2:
+        remainder = " ".join(lines[1:])
+        lines = [lines[0], textwrap.shorten(remainder, width=width, placeholder="…")]
+    return r"\N".join(lines[:2])
+
+
+def _subtitle_words(value: str) -> list[str]:
+    cleaned = value.replace("{", "").replace("}", "").replace("\\", "")
+    return " ".join(cleaned.split()).split()
+
+
+def _highlight_subtitle_text(words: list[str], active_index: int, *, width: int) -> str:
+    indexed = list(enumerate(words))
+    lines: list[list[tuple[int, str]]] = []
+    current: list[tuple[int, str]] = []
+    current_length = 0
+    for item in indexed:
+        word_length = len(item[1])
+        projected = current_length + (1 if current else 0) + word_length
+        if current and projected > width:
+            lines.append(current)
+            current = [item]
+            current_length = word_length
+        else:
+            current.append(item)
+            current_length = projected
+    if current:
+        lines.append(current)
+    active_line = next(
+        (index for index, line in enumerate(lines) if any(i == active_index for i, _ in line)),
+        0,
+    )
+    page_start = (active_line // 2) * 2
+    visible_lines = lines[page_start:page_start + 2]
+    rendered: list[str] = []
+    for line in visible_lines:
+        values: list[str] = []
+        for index, word in line:
+            if index == active_index:
+                values.append(
+                    r"{\c&H0023A6F5&\3c&H00040608&\bord3}" + word
+                    + r"{\c&H00DDEBF3&\bord2}"
+                )
+            else:
+                values.append(word)
+        rendered.append(" ".join(values))
+    return r"\N".join(rendered)
+
+
+def build_scene_ass(
+    cues: list[Cue],
+    scene: Scene,
+    orientation: str,
+    *,
+    speaker: str = "",
+    subtitle_style: str = "normal",
+) -> str:
+    """Build burned-in captions retimed to one scene's output clock."""
+    if subtitle_style not in {"normal", "highlight"}:
+        raise ValueError(f"Estilo de legenda inválido: {subtitle_style}")
+    if orientation == "vertical":
+        width, height, font_size = 1080, 1920, 54
+        margin_v = 1040 if scene.layout == "professor_top" else 120
+        line_width = 34
+    elif orientation == "horizontal":
+        width, height, font_size = 1920, 1080, 42
+        margin_v = 590 if scene.layout == "professor_top" else 70
+        line_width = 54
+    else:
+        raise ValueError(f"Orientação inválida: {orientation}")
+
+    speed = _scene_speed(scene)
+    selected_speaker = speaker.strip().casefold()
+    dialogue: list[str] = []
+    for cue in cues:
+        if cue.end <= scene.start or cue.start >= scene.end:
+            continue
+        if selected_speaker and cue.speaker.strip().casefold() != selected_speaker:
+            continue
+        if subtitle_style == "normal":
+            text = _subtitle_text(cue.text, width=line_width)
+            if not text:
+                continue
+            start = (max(cue.start, scene.start) - scene.start) / speed
+            end = (min(cue.end, scene.end) - scene.start) / speed
+            if end <= start:
+                continue
+            dialogue.append(
+                f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Default,,0,0,0,,{text}"
+            )
+            continue
+
+        words = _subtitle_words(cue.text)
+        if not words:
+            continue
+        weights = [max(1, len(re.sub(r"\W+", "", word))) for word in words]
+        total_weight = sum(weights)
+        cue_duration = max(0.0, cue.end - cue.start)
+        elapsed_weight = 0
+        for word_index, weight in enumerate(weights):
+            word_start = cue.start + cue_duration * elapsed_weight / total_weight
+            elapsed_weight += weight
+            word_end = cue.start + cue_duration * elapsed_weight / total_weight
+            clipped_start = max(word_start, scene.start)
+            clipped_end = min(word_end, scene.end)
+            if clipped_end <= clipped_start:
+                continue
+            start = (clipped_start - scene.start) / speed
+            end = (clipped_end - scene.start) / speed
+            text = _highlight_subtitle_text(words, word_index, width=line_width)
+            dialogue.append(
+                f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Default,,0,0,0,,{text}"
+            )
+
+    if subtitle_style == "highlight":
+        primary = "&H00DDEBF3"
+        secondary = "&H0023A6F5"
+        outline = "&H00040608"
+    else:
+        primary = "&H00FFFFFF"
+        secondary = "&H000000FF"
+        outline = "&H00000000"
+    header = f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: {width}
+PlayResY: {height}
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,{font_size},{primary},{secondary},{outline},&H90000000,-1,0,0,0,100,100,0,0,3,2,0,2,55,55,{margin_v},1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+    return header + "\n".join(dialogue) + ("\n" if dialogue else "")
+
+
+def _subtitle_filter(path: Path) -> str:
+    escaped = path.resolve().as_posix().replace(":", r"\:").replace("'", r"\'")
+    return f"subtitles=filename='{escaped}'"
+
+
+def _atempo_filters(speed: float) -> list[str]:
+    """Use factors up to 2x so this also works with older FFmpeg builds."""
+    remaining = speed
+    factors: list[float] = []
+    while remaining > 2.0 + 1e-6:
+        factors.append(2.0)
+        remaining /= 2.0
+    if abs(remaining - 1.0) > 1e-6:
+        factors.append(remaining)
+    return [f"atempo={factor:.6f}" for factor in factors]
+
+
+def _scene_audio_filter(source_label: str | None, speed: float, duration: float) -> str:
+    if source_label is None:
+        return (
+            "anullsrc=channel_layout=stereo:sample_rate=48000,"
+            f"atrim=duration={duration:.6f},asetpts=PTS-STARTPTS[a]"
+        )
+
+    filters = [
+        f"[{source_label}]aresample=async=1:first_pts=0",
+        "asetpts=PTS-STARTPTS",
+        *_atempo_filters(speed),
+        f"atrim=duration={duration:.6f}",
+        "asetpts=PTS-STARTPTS",
+    ]
+    fade_duration = min(0.05, duration / 4)
+    if fade_duration > 0.005:
+        filters.extend(
+            (
+                f"afade=t=in:st=0:d={fade_duration:.6f}",
+                f"afade=t=out:st={max(0.0, duration - fade_duration):.6f}:"
+                f"d={fade_duration:.6f}",
+            )
+        )
+    return ",".join(filters) + "[a]"
+
+
+def scene_filter(
+    operation: Operation,
+    scene: Scene,
+    orientation: str,
+    *,
+    subtitle_path: Path | None = None,
+) -> str:
     """Build one normalized scene layout for either 9:16 or 16:9 output."""
     if orientation == "vertical":
         width, height = 1080, 1920
@@ -694,7 +901,13 @@ def scene_filter(operation: Operation, scene: Scene, orientation: str) -> str:
             source_filter=graph_source_filter,
         )
         filters = f"{professor};{graph};[professor][graph]hstack=inputs=2[scene]"
-    return f"{filters};[scene]fps=30,format=yuv420p[v]"
+    speed = _scene_speed(scene)
+    final_filters = (
+        f"[scene]setpts=(PTS-STARTPTS)/{speed:.6f},fps=30,format=yuv420p"
+    )
+    if subtitle_path is not None:
+        final_filters += f",{_subtitle_filter(subtitle_path)}"
+    return f"{filters};{final_filters}[v]"
 
 
 def capture_scene_frame(
@@ -744,6 +957,9 @@ def render_scene_video(
     ffmpeg_path: str = "",
     professor_sync_offset: float = 0.0,
     audio_source: str = "professor",
+    cues: list[Cue] | None = None,
+    subtitle_speaker: str = "",
+    subtitle_style: str = "normal",
 ) -> Path:
     """Render one timeline scene to a normalized MP4 segment."""
     if scene.end <= scene.start:
@@ -759,8 +975,48 @@ def render_scene_video(
         raise FileNotFoundError(f"Vídeo do professor não encontrado: {professor}")
     target = Path(output_path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    duration = scene.end - scene.start
-    audio_input = "0:a:0" if audio_source == "screen" else "1:a:0"
+    speed = _scene_speed(scene)
+    duration = (scene.end - scene.start) / speed
+    resolved_audio = scene.audio_mode if scene.audio_mode != "project" else audio_source
+    if resolved_audio not in {"professor", "screen", "mute"}:
+        resolved_audio = audio_source
+    audio_input = {
+        "screen": "0:a:0",
+        "professor": "1:a:0",
+        "mute": None,
+    }[resolved_audio]
+
+    subtitle_path: Path | None = None
+    if scene.subtitles_enabled and cues:
+        subtitle_content = build_scene_ass(
+            cues,
+            scene,
+            orientation,
+            speaker=subtitle_speaker,
+            subtitle_style=subtitle_style,
+        )
+        if "Dialogue:" in subtitle_content:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8-sig",
+                suffix=".ass",
+                prefix="trade-cutter-captions-",
+                dir=target.parent,
+                delete=False,
+            ) as subtitle_file:
+                subtitle_file.write(subtitle_content)
+                subtitle_path = Path(subtitle_file.name)
+
+    filter_complex = (
+        scene_filter(
+            operation,
+            scene,
+            orientation,
+            subtitle_path=subtitle_path,
+        )
+        + ";"
+        + _scene_audio_filter(audio_input, speed, duration)
+    )
     command = [
         ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
         "-ss", format_timecode(max(0.0, scene.start), milliseconds=True),
@@ -768,14 +1024,19 @@ def render_scene_video(
         "-ss", format_timecode(max(0.0, scene.start + professor_sync_offset), milliseconds=True),
         "-i", str(professor),
         "-t", f"{duration:.3f}",
-        "-filter_complex", scene_filter(operation, scene, orientation),
-        "-map", "[v]", "-map", audio_input,
-        "-af", "aresample=async=1:first_pts=0,asetpts=PTS-STARTPTS",
+        "-filter_complex_threads", "1",
+        "-filter_complex", filter_complex,
+        "-map", "[v]", "-map", "[a]",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-threads:v", "2",
         "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
         "-avoid_negative_ts", "make_zero", "-movflags", "+faststart", str(target),
     ]
-    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    finally:
+        if subtitle_path is not None:
+            subtitle_path.unlink(missing_ok=True)
     if completed.returncode != 0:
         raise RuntimeError(
             f"FFmpeg falhou na cena {scene.id} de {operation.title}:\n"
@@ -811,6 +1072,11 @@ def export_final_video(
     ffmpeg_path: str = "",
     professor_sync_offset: float = 0.0,
     audio_source: str = "professor",
+    cues: list[Cue] | None = None,
+    burn_subtitles: bool = False,
+    subtitle_speaker: str = "",
+    subtitle_style: str = "normal",
+    transcript_path: str | Path = "",
     progress: Callable[[int, int, str], None] | None = None,
 ) -> Path:
     """Render all selected cuts/scenes and concatenate them into one final MP4."""
@@ -832,7 +1098,10 @@ def export_final_video(
         (operation, scene)
         for operation in selected
         for scene in validate_scene_timeline(operation)
+        if not scene.skip
     ]
+    if not timeline:
+        raise ValueError("Todas as cenas selecionadas estão marcadas como salto.")
     target = Path(output_path)
     target.parent.mkdir(parents=True, exist_ok=True)
     ffmpeg = find_ffmpeg(ffmpeg_path)
@@ -853,6 +1122,9 @@ def export_final_video(
                 ffmpeg_path=ffmpeg,
                 professor_sync_offset=professor_sync_offset,
                 audio_source=audio_source,
+                cues=cues if burn_subtitles else None,
+                subtitle_speaker=subtitle_speaker,
+                subtitle_style=subtitle_style,
             )
             segments.append(segment)
             if progress:
@@ -871,6 +1143,20 @@ def export_final_video(
         completed = subprocess.run(command, capture_output=True, text=True, check=False)
         if completed.returncode != 0:
             raise RuntimeError(f"FFmpeg não conseguiu montar o vídeo final:\n{completed.stderr.strip()}")
+        write_export_sidecars(
+            target,
+            operations,
+            video_path=video_path,
+            professor_video_path=professor_video_path,
+            cues=cues,
+            transcript_path=transcript_path,
+            orientation=orientation,
+            project_audio=audio_source,
+            professor_sync_offset=professor_sync_offset,
+            captions_enabled=burn_subtitles,
+            caption_speaker=subtitle_speaker,
+            caption_style=subtitle_style,
+        )
         if progress:
-            progress(total, total, "Vídeo final concluído")
+            progress(total, total, "Vídeo final e arquivos auxiliares concluídos")
     return target

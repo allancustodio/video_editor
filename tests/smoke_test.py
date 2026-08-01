@@ -29,6 +29,11 @@ def main() -> None:
     legacy_operation = Operation.from_dict(legacy_payload)
     assert legacy_operation.crop_area == "full"
     assert legacy_operation.crop_width == 1.0
+    legacy_scene = Scene.from_dict({"id": "legacy", "start": 0.0, "end": 10.0})
+    assert legacy_scene.playback_speed == 1.0
+    assert legacy_scene.audio_mode == "project"
+    assert legacy_scene.subtitles_enabled is True
+    assert legacy_scene.skip is False
 
     with tempfile.TemporaryDirectory() as temporary:
         target = Path(temporary) / "cuts.json"
@@ -47,6 +52,8 @@ def main() -> None:
                 "intro", operations[0].cut_start, operations[0].cut_end,
                 "side_by_side", professor_zoom=1.25, graph_x=50,
                 graph_alignment="right",
+                playback_speed=10.0, audio_mode="mute", subtitles_enabled=False,
+                skip=True,
             )
         ]
         save_operations(target, operations, str(TRANSCRIPT))
@@ -60,6 +67,10 @@ def main() -> None:
         assert loaded[0].scenes[0].professor_zoom == 1.25
         assert loaded[0].scenes[0].graph_x == 50
         assert loaded[0].scenes[0].graph_alignment == "right"
+        assert loaded[0].scenes[0].playback_speed == 10.0
+        assert loaded[0].scenes[0].audio_mode == "mute"
+        assert loaded[0].scenes[0].subtitles_enabled is False
+        assert loaded[0].scenes[0].skip is True
 
     print(f"OK: {len(cues)} legendas e {len(operations)} candidatos.")
 

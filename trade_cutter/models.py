@@ -31,6 +31,15 @@ GRAPH_ALIGNMENT_LABELS = {
     "right": "Direita",
 }
 
+SCENE_AUDIO_LABELS = {
+    "project": "Padrão do projeto",
+    "professor": "Vídeo do professor",
+    "screen": "Vídeo da tela",
+    "mute": "Sem áudio",
+}
+
+SCENE_SPEED_OPTIONS = (1.0, 2.0, 5.0, 10.0, 15.0, 20.0, 25.0, 50.0, 100.0)
+
 
 @dataclass(slots=True)
 class Cue:
@@ -69,6 +78,17 @@ class Scene:
     graph_x: float = 0.0
     graph_y: float = 0.0
     graph_alignment: str = "center"
+    playback_speed: float = 1.0
+    audio_mode: str = "project"
+    subtitles_enabled: bool = True
+    skip: bool = False
+
+    @property
+    def output_duration(self) -> float:
+        if self.skip:
+            return 0.0
+        speed = min(max(float(self.playback_speed or 1.0), 0.1), 100.0)
+        return max(0.0, self.end - self.start) / speed
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -174,6 +194,10 @@ class Operation:
                     graph_x=reference.graph_x,
                     graph_y=reference.graph_y,
                     graph_alignment=reference.graph_alignment,
+                    playback_speed=reference.playback_speed,
+                    audio_mode=reference.audio_mode,
+                    subtitles_enabled=reference.subtitles_enabled,
+                    skip=reference.skip,
                 )
             ]
         else:
