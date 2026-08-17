@@ -118,6 +118,36 @@ A linha do tempo precisa cobrir o trecho inteiro, sem buracos ou sobreposições
 O áudio permanece contínuo e pode vir do vídeo do professor ou da tela. A ação
 **Exportar vídeo final** normaliza as cenas e gera um único arquivo MP4.
 
+### Capa e encerramento
+
+Abra **Capa e encerramento** na montagem final e informe somente a data do
+trade e o número de pontos. A aplicação gera automaticamente duas artes
+verticais em 1080 × 1920 usando os templates da marca:
+
+- a capa pode ser baixada em PNG para publicação no Instagram;
+- o encerramento também pode ser baixado separadamente em PNG;
+- **Adicionar ao início do vídeo** inclui a capa por três segundos;
+- **Adicionar ao final do vídeo** inclui o encerramento por quatro segundos.
+
+As duas inclusões são independentes e ficam desmarcadas por padrão. Mesmo sem
+incluí-las no MP4, os downloads continuam disponíveis. Ao exportar um projeto,
+as artes geradas são salvas como `capa.png` e `encerramento.png`. Em projetos
+horizontais, as artes verticais são centralizadas com laterais pretas.
+
+### Palavras de 1x e efeitos
+
+Abra **Palavras de 1x e efeitos** para editar a lista usada por **Sugerir cenas
+pela transcrição**. Cada palavra ou frase pode ser ativada, mantida em 1x e
+associada a um efeito curto: nenhum, tremor, flash dourado ou tremor com texto.
+A configuração é salva em `scene_keyword_rules.json` e a busca ignora acentos e
+maiúsculas.
+
+O padrão inclui “delícia” com **Tremor + texto**. O instante é estimado pela
+mesma divisão por palavra usada na legenda com highlight; portanto o efeito
+acompanha a fala, mesmo quando ela está dentro de uma legenda maior. Tudo é
+renderizado no próprio FFmpeg, sem uma etapa externa. Ao desmarcar uma ocorrência
+na revisão da proposta, tanto a região em 1x quanto seu efeito são removidos.
+
 ## Modo sem interface
 
 ### Somente analisar
@@ -325,6 +355,8 @@ output/
 │   ├── 2026-08-01_143218_video-final.transcript.vtt
 │   ├── 2026-08-01_143218_video-final.edit.json
 │   ├── source.transcript.vtt
+│   ├── capa.png
+│   ├── encerramento.png
 │   ├── cuts.json
 │   ├── report.html
 │   └── project.json

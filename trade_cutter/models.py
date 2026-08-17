@@ -100,6 +100,24 @@ class Scene:
 
 
 @dataclass(slots=True)
+class VisualEffect:
+    id: str
+    kind: str
+    start: float
+    end: float
+    text: str = ""
+    keyword: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "VisualEffect":
+        allowed = {field_name for field_name in cls.__dataclass_fields__}
+        return cls(**{key: value[key] for key in allowed if key in value})
+
+
+@dataclass(slots=True)
 class Operation:
     id: str
     title: str
@@ -126,6 +144,7 @@ class Operation:
     sequence_order: int = 0
     output_orientation: str = "vertical"
     scenes: list[Scene] = field(default_factory=list)
+    effects: list[VisualEffect] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -133,10 +152,18 @@ class Operation:
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "Operation":
         allowed = {field_name for field_name in cls.__dataclass_fields__}
-        payload = {key: value[key] for key in allowed if key in value and key != "scenes"}
+        payload = {
+            key: value[key]
+            for key in allowed
+            if key in value and key not in {"scenes", "effects"}
+        }
         payload["scenes"] = [
             item if isinstance(item, Scene) else Scene.from_dict(item)
             for item in value.get("scenes", [])
+        ]
+        payload["effects"] = [
+            item if isinstance(item, VisualEffect) else VisualEffect.from_dict(item)
+            for item in value.get("effects", [])
         ]
         return cls(**payload)
 

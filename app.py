@@ -3,14 +3,17 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
+import re
 import tempfile
 from dataclasses import replace
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
 from trade_cutter.ai import refine_operations
+from trade_cutter.cards import TEMPLATE_PATHS, format_trade_points, render_trade_card
 from trade_cutter.detector import DetectionConfig, detect_operations
 from trade_cutter.export import create_html_report, load_operations, save_operations
 from trade_cutter.ffmpeg import (
@@ -21,6 +24,15 @@ from trade_cutter.ffmpeg import (
     export_final_video,
     find_ffmpeg,
     render_scene_video,
+)
+from trade_cutter.keyword_effects import (
+    EFFECT_LABELS,
+    default_keyword_rules,
+    keyword_rule_records,
+    keyword_rules_from_records,
+    load_keyword_rules,
+    save_keyword_rules,
+    validate_keyword_rules,
 )
 from trade_cutter.models import (
     GRAPH_ALIGNMENT_LABELS,
@@ -50,7 +62,6 @@ from trade_cutter.rules import (
     save_rules,
 )
 from trade_cutter.scene_suggestions import (
-    DEFAULT_SCENE_KEYWORDS,
     build_scene_suggestion_plan,
     materialize_suggestions,
     suggest_scenes,
@@ -72,6 +83,9 @@ st.caption("Analisa a transcrição, monta cenas com professor e gráfico e expo
 
 DEFAULT_RECORDINGS_FOLDER = r"C:\Users\allan\OneDrive\Vídeos\Aulas"
 RULES_PATH = Path(os.getenv("TRADE_CUTTER_RULES_PATH", "user_rules.json"))
+SCENE_KEYWORDS_PATH = Path(
+    os.getenv("TRADE_CUTTER_SCENE_KEYWORDS_PATH", "scene_keyword_rules.json")
+)
 
 AREA_LABELS = {
     "full": "Vídeo completo",
@@ -107,6 +121,9 @@ SUBTITLE_STYLE_LABELS = {
     "highlight": "Highlight dourado",
 }
 SOURCE_PREVIEW_MAX_SECONDS = 120.0
+OPENING_DURATION_SECONDS = 3.0
+CLOSING_DURATION_SECONDS = 4.0
+_RECORDING_DATE_RE = re.compile(r"GMT(?P<date>\d{8})", re.IGNORECASE)
 
 
 def _scene_widget_key(operation: Operation, scene: Scene, field: str) -> str:
@@ -163,6 +180,44 @@ def _clock_sync_clock_time_changed() -> None:
     _invalidate_clock_sync()
 
 
+def _source_video_changed() -> None:
+    _invalidate_clock_sync()
+    st.session_state.pop("loaded_recording_id", None)
+    st.session_state.pop("trade_date_input", None)
+
+
+def _default_trade_date(video_path: str = "") -> date:
+    candidates = (
+        str(st.session_state.get("loaded_recording_id", "")),
+        Path(video_path).name if video_path else "",
+    )
+    for candidate in candidates:
+        match = _RECORDING_DATE_RE.search(candidate)
+        if match:
+            try:
+                return datetime.strptime(match.group("date"), "%Y%m%d").date()
+            except ValueError:
+                pass
+    return date.today()
+
+
+@st.cache_data(show_spinner=False)
+def cached_trade_card(
+    kind: str,
+    trade_date_iso: str,
+    points: int,
+    template_path: str,
+    template_mtime_ns: int,
+) -> bytes:
+    del template_mtime_ns
+    return render_trade_card(
+        kind,
+        date.fromisoformat(trade_date_iso),
+        points,
+        template_path=template_path,
+    )
+
+
 def _scene_signature(
     operation: Operation,
     scene: Scene,
@@ -201,6 +256,10 @@ def _scene_signature(
         subtitles_enabled,
         subtitle_speaker,
         subtitle_style,
+        tuple(
+            (effect.id, effect.kind, effect.start, effect.end, effect.text)
+            for effect in operation.effects
+        ),
     )
 
 
@@ -251,6 +310,7 @@ def _render_scene_suggestion_panel(
                 st.warning("Carregue uma transcrição VTT antes de analisar as falas.")
             else:
                 try:
+                    keyword_rules = load_keyword_rules(SCENE_KEYWORDS_PATH)
                     plan = suggest_scenes(
                         operation,
                         cues,
@@ -260,6 +320,7 @@ def _render_scene_suggestion_panel(
                         target_fast_duration=target_duration,
                         minimum_gap=minimum_gap,
                         max_speed=max_speed,
+                        keyword_rules=keyword_rules,
                     )
                     st.session_state[state_key] = {
                         "bounds": (operation.cut_start, operation.cut_end),
@@ -267,10 +328,19 @@ def _render_scene_suggestion_panel(
                         "target_duration": float(target_duration),
                         "minimum_gap": float(minimum_gap),
                         "max_speed": float(max_speed),
+                        "keyword_rules": keyword_rules,
                     }
                     for key in list(st.session_state):
                         if key.startswith(f"keep_keyword_occurrence_{operation.id}_"):
                             st.session_state.pop(key, None)
+                except TypeError as error:
+                    if "unexpected keyword argument 'keyword_rules'" not in str(error):
+                        raise
+                    st.error(
+                        "O Streamlit carregou o app novo, mas manteve o módulo antigo de "
+                        "sugestões em memória. Pare o servidor com Ctrl+C e execute "
+                        "`npm run dev` novamente. Atualizar apenas o navegador não resolve."
+                    )
                 except ValueError as error:
                     st.error(str(error))
 
@@ -283,10 +353,15 @@ def _render_scene_suggestion_panel(
             return
 
         analysis = proposal["analysis"]
+        active_rule_labels = [
+            rule.expression
+            for rule in proposal.get("keyword_rules", [])
+            if rule.enabled and (rule.keep_normal or rule.effect != "none")
+        ]
         st.caption(
             "Palavras procuradas: "
-            + ", ".join(DEFAULT_SCENE_KEYWORDS)
-            + ". Variações de plural, “por cento” e % também são reconhecidas."
+            + ", ".join(active_rule_labels)
+            + ". Edite esta lista em “Palavras de 1x e efeitos”."
         )
         selected_occurrence_ids: set[str] = set()
         if analysis.occurrences:
@@ -295,10 +370,19 @@ def _render_scene_suggestion_panel(
                 keep_key = (
                     f"keep_keyword_occurrence_{operation.id}_{occurrence.id}"
                 )
+                effect_labels = tuple(
+                    dict.fromkeys(
+                        EFFECT_LABELS.get(effect.kind, effect.kind)
+                        for effect in occurrence.effects
+                    )
+                )
+                effect_suffix = (
+                    f" · efeito: {', '.join(effect_labels)}" if effect_labels else ""
+                )
                 if st.checkbox(
                     (
                         f"{format_timecode(occurrence.cue_start)} · "
-                        f"{', '.join(occurrence.keywords)} · {occurrence.text}"
+                        f"{', '.join(occurrence.keywords)}{effect_suffix} · {occurrence.text}"
                     ),
                     value=True,
                     key=keep_key,
@@ -388,6 +472,7 @@ def _render_scene_suggestion_panel(
                 plan.scenes,
                 approved_jumps=approved_jumps,
                 max_speed=proposal["max_speed"],
+                effects=plan.effects,
             )
             operation.crop_area = "profit_index"
             apply_crop_preset(operation, get_crop_presets())
@@ -1193,6 +1278,7 @@ def cached_recordings(folder: str):
 def clear_loaded_recording_state() -> None:
     for key in (
         "source",
+        "loaded_recording_id",
         "cues",
         "operations",
         "operations_editor",
@@ -1203,6 +1289,10 @@ def clear_loaded_recording_state() -> None:
         "clock_sync_video_time_input",
         "clock_sync_clock_time_input",
         "annotated_cut_time",
+        "trade_date_input",
+        "trade_points_input",
+        "include_opening_input",
+        "include_closing_input",
     ):
         st.session_state.pop(key, None)
     for key in list(st.session_state):
@@ -1282,6 +1372,21 @@ def load_exported_project(path: str) -> Path:
         st.session_state["clock_sync_clock_time_input"] = format_timecode(
             clock_sync["clock_time"]
         )
+    trade_date_value = settings.get("trade_date")
+    if trade_date_value:
+        try:
+            st.session_state["trade_date_input"] = date.fromisoformat(
+                str(trade_date_value)
+            )
+        except ValueError:
+            pass
+    st.session_state["trade_points_input"] = int(settings.get("trade_points", 0) or 0)
+    st.session_state["include_opening_input"] = bool(
+        settings.get("include_opening", False)
+    )
+    st.session_state["include_closing_input"] = bool(
+        settings.get("include_closing", False)
+    )
     st.session_state[f"final_audio_source_label_{widget_generation}"] = (
         "Vídeo da tela"
         if settings.get("audio_source") == "screen"
@@ -1430,7 +1535,7 @@ with st.sidebar:
         "Vídeo da tela",
         placeholder=r"C:\Videos\gravacao-tela.mp4",
         key="video_path_input",
-        on_change=_invalidate_clock_sync,
+        on_change=_source_video_changed,
     )
     professor_video_path = st.text_input(
         "Vídeo do professor (opcional)",
@@ -1620,6 +1725,76 @@ with st.expander("Gerenciar regras automáticas", expanded=False):
         "Continuam protegidas no código: associação entre entrada e resultado, "
         "remoção de duplicidades, direção, ativos e limites de tempo."
     )
+
+with st.expander("Palavras de 1x e efeitos", expanded=False):
+    keyword_message = st.session_state.pop("keyword_editor_message", "")
+    if keyword_message:
+        st.success(keyword_message)
+    st.caption(
+        "Estas palavras e frases são procuradas apenas na fala do Rafa. Elas podem criar "
+        "uma região em 1x e, opcionalmente, um efeito curto sincronizado pela legenda."
+    )
+    try:
+        current_keyword_rules = load_keyword_rules(SCENE_KEYWORDS_PATH)
+    except ValueError as error:
+        st.error(str(error))
+        st.info("Os padrões originais foram carregados para permitir a recuperação.")
+        current_keyword_rules = default_keyword_rules()
+
+    keyword_editor_generation = st.session_state.get("keyword_editor_generation", 0)
+    edited_keyword_df = st.data_editor(
+        pd.DataFrame(keyword_rule_records(current_keyword_rules)),
+        hide_index=True,
+        width="stretch",
+        num_rows="dynamic",
+        column_config={
+            "Ativa": st.column_config.CheckboxColumn(required=True),
+            "Palavra ou frase": st.column_config.TextColumn(required=True, width="large"),
+            "Manter em 1x": st.column_config.CheckboxColumn(required=True),
+            "Efeito": st.column_config.SelectboxColumn(
+                options=list(EFFECT_LABELS.values()),
+                required=True,
+            ),
+            "ID": None,
+        },
+        disabled=["ID"],
+        key=f"keyword_editor_{keyword_editor_generation}",
+    )
+    st.caption(
+        "A busca ignora maiúsculas e acentos. Se houver efeito, a fala será mantida em 1x "
+        "automaticamente. O efeito é produzido no próprio FFmpeg."
+    )
+    validate_keyword_column, save_keyword_column, restore_keyword_column = st.columns(3)
+    validate_keywords_clicked = validate_keyword_column.button(
+        "Validar", key="validate_scene_keywords", width="stretch"
+    )
+    save_keywords_clicked = save_keyword_column.button(
+        "Salvar", key="save_scene_keywords", width="stretch"
+    )
+    restore_keywords_clicked = restore_keyword_column.button(
+        "Restaurar padrões", key="restore_scene_keywords", width="stretch"
+    )
+
+    if restore_keywords_clicked:
+        save_keyword_rules(default_keyword_rules(), SCENE_KEYWORDS_PATH)
+        st.session_state["keyword_editor_generation"] = keyword_editor_generation + 1
+        st.session_state["keyword_editor_message"] = "Palavras e efeitos originais restaurados."
+        st.rerun()
+
+    if validate_keywords_clicked or save_keywords_clicked:
+        try:
+            edited_keyword_rules = keyword_rules_from_records(
+                edited_keyword_df.to_dict("records")
+            )
+            validate_keyword_rules(edited_keyword_rules)
+            if validate_keywords_clicked:
+                st.success(f"{len(edited_keyword_rules)} palavras e frases válidas.")
+            if save_keywords_clicked:
+                target = save_keyword_rules(edited_keyword_rules, SCENE_KEYWORDS_PATH)
+                st.success(f"{len(edited_keyword_rules)} palavras e frases salvas em {target}.")
+        except Exception as error:
+            st.error(str(error))
+
 
 added_message = st.session_state.pop("manual_cut_added_message", "")
 if added_message:
@@ -2135,6 +2310,109 @@ if operations:
         st.caption(f'As legendas usarão somente as falas identificadas como “{target_speaker}”.')
     elif subtitles_enabled:
         st.caption("As falas de todos os participantes presentes no VTT serão legendadas.")
+
+    st.session_state.setdefault("trade_date_input", _default_trade_date(video_path))
+    st.session_state.setdefault("trade_points_input", 0)
+    st.session_state.setdefault("include_opening_input", False)
+    st.session_state.setdefault("include_closing_input", False)
+    opening_card_bytes = b""
+    closing_card_bytes = b""
+    with st.expander("Capa e encerramento", expanded=True):
+        st.caption(
+            "As duas artes podem ser baixadas como PNG. Marque separadamente quais "
+            "devem entrar no vídeo final."
+        )
+        metadata_left, metadata_right = st.columns(2)
+        trade_date = metadata_left.date_input(
+            "Data do trade",
+            key="trade_date_input",
+            format="DD/MM/YYYY",
+        )
+        trade_points = int(
+            metadata_right.number_input(
+                "Número de pontos",
+                step=1,
+                format="%d",
+                key="trade_points_input",
+                help="Valores positivos recebem o sinal + automaticamente.",
+            )
+        )
+        try:
+            opening_template = TEMPLATE_PATHS["opening"]
+            closing_template = TEMPLATE_PATHS["closing"]
+            opening_card_bytes = cached_trade_card(
+                "opening",
+                trade_date.isoformat(),
+                trade_points,
+                str(opening_template),
+                opening_template.stat().st_mtime_ns,
+            )
+            closing_card_bytes = cached_trade_card(
+                "closing",
+                trade_date.isoformat(),
+                trade_points,
+                str(closing_template),
+                closing_template.stat().st_mtime_ns,
+            )
+        except Exception as error:
+            st.error(f"Não foi possível gerar as artes: {error}")
+
+        opening_column, closing_column = st.columns(2)
+        with opening_column:
+            st.markdown("**Capa / abertura**")
+            if opening_card_bytes:
+                st.image(
+                    opening_card_bytes,
+                    caption=(
+                        f"{trade_date:%d/%m/%Y} · "
+                        f"{format_trade_points(trade_points)} pontos"
+                    ),
+                    width="stretch",
+                )
+            include_opening = st.checkbox(
+                f"Adicionar ao início do vídeo ({OPENING_DURATION_SECONDS:g}s)",
+                key="include_opening_input",
+                disabled=not opening_card_bytes,
+            )
+            st.download_button(
+                "Baixar capa PNG",
+                data=opening_card_bytes,
+                file_name=f"{trade_date:%Y-%m-%d}_capa-trade.png",
+                mime="image/png",
+                width="stretch",
+                disabled=not opening_card_bytes,
+            )
+
+        with closing_column:
+            st.markdown("**Encerramento**")
+            if closing_card_bytes:
+                st.image(
+                    closing_card_bytes,
+                    caption=(
+                        f"{trade_date:%d/%m/%Y} · "
+                        f"{format_trade_points(trade_points)} pontos"
+                    ),
+                    width="stretch",
+                )
+            include_closing = st.checkbox(
+                f"Adicionar ao final do vídeo ({CLOSING_DURATION_SECONDS:g}s)",
+                key="include_closing_input",
+                disabled=not closing_card_bytes,
+            )
+            st.download_button(
+                "Baixar encerramento PNG",
+                data=closing_card_bytes,
+                file_name=f"{trade_date:%Y-%m-%d}_encerramento-trade.png",
+                mime="image/png",
+                width="stretch",
+                disabled=not closing_card_bytes,
+            )
+
+        if orientation == "horizontal" and (include_opening or include_closing):
+            st.info(
+                "As artes verticais serão centralizadas com laterais pretas no vídeo horizontal."
+            )
+
     for item in operations:
         item.output_orientation = orientation
 
@@ -2191,9 +2469,19 @@ if operations:
                     raise ValueError("Informe o caminho do vídeo da tela.")
                 if not professor_video_path:
                     raise ValueError("Informe o caminho do vídeo do professor.")
+                if include_opening and not opening_card_bytes:
+                    raise ValueError("A capa selecionada não pôde ser gerada.")
+                if include_closing and not closing_card_bytes:
+                    raise ValueError("O encerramento selecionado não pôde ser gerado.")
                 find_ffmpeg(ffmpeg_path)
                 project_directory = create_project_directory(output_dir, final_filename)
                 source_transcript_path = st.session_state.get("source", "")
+                opening_card_path = project_directory / "capa.png"
+                closing_card_path = project_directory / "encerramento.png"
+                if opening_card_bytes:
+                    opening_card_path.write_bytes(opening_card_bytes)
+                if closing_card_bytes:
+                    closing_card_path.write_bytes(closing_card_bytes)
                 cuts_path = save_operations(
                     project_directory / "cuts.json",
                     operations,
@@ -2229,6 +2517,14 @@ if operations:
                     subtitle_speaker=subtitle_speaker,
                     subtitle_style=subtitle_style,
                     transcript_path=source_transcript_path,
+                    opening_image_path=(
+                        opening_card_path if include_opening else ""
+                    ),
+                    closing_image_path=(
+                        closing_card_path if include_closing else ""
+                    ),
+                    opening_duration=OPENING_DURATION_SECONDS,
+                    closing_duration=CLOSING_DURATION_SECONDS,
                 )
                 generated_sidecars = sidecar_paths(target)
                 manifest_path = write_project_manifest(
@@ -2242,6 +2538,10 @@ if operations:
                         "cuts": cuts_path,
                         "report": report_path,
                         "source_transcript": copied_source_transcript,
+                        "cover": opening_card_path if opening_card_bytes else None,
+                        "closing_card": (
+                            closing_card_path if closing_card_bytes else None
+                        ),
                     },
                     source_video=video_path,
                     professor_video=professor_video_path,
@@ -2259,13 +2559,21 @@ if operations:
                             if isinstance(clock_sync, dict)
                             else None
                         ),
+                        "trade_date": trade_date.isoformat(),
+                        "trade_points": trade_points,
+                        "include_opening": include_opening,
+                        "include_closing": include_closing,
+                        "opening_duration": OPENING_DURATION_SECONDS,
+                        "closing_duration": CLOSING_DURATION_SECONDS,
                         "audio_source": audio_source,
                         "subtitles_enabled": subtitles_enabled,
                         "subtitles_only_presenter": subtitles_only_presenter,
                         "subtitle_speaker": subtitle_speaker,
                         "subtitle_style": subtitle_style,
                         "target_speaker": target_speaker,
-                        "scene_keywords": list(DEFAULT_SCENE_KEYWORDS),
+                        "scene_keyword_rules": [
+                            rule.to_dict() for rule in current_keyword_rules
+                        ],
                         "default_crop_area": "profit_index",
                         "default_layout": "professor_top",
                         "default_graph_alignment": "right",
@@ -2276,7 +2584,10 @@ if operations:
                 st.caption(
                     "Arquivos do projeto: "
                     + " · ".join(path.name for path in generated_sidecars.values())
-                    + f" · {cuts_path.name} · {report_path.name} · {manifest_path.name}"
+                    + (
+                        f" · {opening_card_path.name} · {closing_card_path.name}"
+                        f" · {cuts_path.name} · {report_path.name} · {manifest_path.name}"
+                    )
                 )
             except Exception as error:
                 if project_directory is not None:

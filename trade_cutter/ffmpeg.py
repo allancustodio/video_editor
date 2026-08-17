@@ -9,9 +9,10 @@ import textwrap
 from pathlib import Path
 from typing import Callable
 
-from .models import Cue, Operation, Scene
+from .models import Cue, Operation, Scene, VisualEffect
 from .sidecars import write_export_sidecars
 from .timecode import format_timecode
+from .word_timing import estimate_word_timings, subtitle_words
 
 
 ProgressCallback = Callable[[int, int, Operation, Path], None]
@@ -648,8 +649,7 @@ def _subtitle_text(value: str, *, width: int) -> str:
 
 
 def _subtitle_words(value: str) -> list[str]:
-    cleaned = value.replace("{", "").replace("}", "").replace("\\", "")
-    return " ".join(cleaned.split()).split()
+    return subtitle_words(value)
 
 
 def _highlight_subtitle_text(words: list[str], active_index: int, *, width: int) -> str:
@@ -697,6 +697,8 @@ def build_scene_ass(
     *,
     speaker: str = "",
     subtitle_style: str = "normal",
+    effects: tuple[VisualEffect, ...] | list[VisualEffect] = (),
+    include_captions: bool = True,
 ) -> str:
     """Build burned-in captions retimed to one scene's output clock."""
     if subtitle_style not in {"normal", "highlight"}:
@@ -715,7 +717,7 @@ def build_scene_ass(
     speed = _scene_speed(scene)
     selected_speaker = speaker.strip().casefold()
     dialogue: list[str] = []
-    for cue in cues:
+    for cue in cues if include_captions else []:
         if cue.end <= scene.start or cue.start >= scene.end:
             continue
         if selected_speaker and cue.speaker.strip().casefold() != selected_speaker:
@@ -733,19 +735,13 @@ def build_scene_ass(
             )
             continue
 
-        words = _subtitle_words(cue.text)
-        if not words:
+        timed_words = estimate_word_timings(cue.text, cue.start, cue.end)
+        if not timed_words:
             continue
-        weights = [max(1, len(re.sub(r"\W+", "", word))) for word in words]
-        total_weight = sum(weights)
-        cue_duration = max(0.0, cue.end - cue.start)
-        elapsed_weight = 0
-        for word_index, weight in enumerate(weights):
-            word_start = cue.start + cue_duration * elapsed_weight / total_weight
-            elapsed_weight += weight
-            word_end = cue.start + cue_duration * elapsed_weight / total_weight
-            clipped_start = max(word_start, scene.start)
-            clipped_end = min(word_end, scene.end)
+        words = [word.text for word in timed_words]
+        for word_index, word in enumerate(timed_words):
+            clipped_start = max(word.start, scene.start)
+            clipped_end = min(word.end, scene.end)
             if clipped_end <= clipped_start:
                 continue
             start = (clipped_start - scene.start) / speed
@@ -754,6 +750,27 @@ def build_scene_ass(
             dialogue.append(
                 f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Default,,0,0,0,,{text}"
             )
+
+    for effect in effects:
+        if effect.kind != "shake_text":
+            continue
+        clipped_start = max(effect.start, scene.start)
+        clipped_end = min(effect.end, scene.end)
+        if clipped_end <= clipped_start:
+            continue
+        start = (clipped_start - scene.start) / speed
+        end = (clipped_end - scene.start) / speed
+        text = " ".join(effect.text.replace("{", "").replace("}", "").split())
+        if not text:
+            continue
+        animated = (
+            r"{\an5\fad(60,120)\fscx70\fscy70"
+            r"\t(0,140,\fscx112\fscy112)\t(140,260,\fscx100\fscy100)}"
+            + text
+        )
+        dialogue.append(
+            f"Dialogue: 2,{_ass_time(start)},{_ass_time(end)},Effect,,0,0,0,,{animated}"
+        )
 
     if subtitle_style == "highlight":
         primary = "&H00DDEBF3"
@@ -772,6 +789,7 @@ ScaledBorderAndShadow: yes
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Default,Arial,{font_size},{primary},{secondary},{outline},&H90000000,-1,0,0,0,100,100,0,0,3,2,0,2,55,55,{margin_v},1
+Style: Effect,Arial,{font_size * 2},&H0023A6F5,&H0023A6F5,&H00040608,&H40000000,-1,0,0,0,100,100,1,0,1,5,2,5,40,40,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -905,9 +923,57 @@ def scene_filter(
     final_filters = (
         f"[scene]setpts=(PTS-STARTPTS)/{speed:.6f},fps=30,format=yuv420p"
     )
+    scene_effects = _scene_effects(operation, scene)
+    shake_intervals = [
+        _effect_output_interval(effect, scene, speed)
+        for effect in scene_effects
+        if effect.kind in {"shake", "shake_text"}
+    ]
+    if shake_intervals:
+        zoom_width = width + 48
+        zoom_height = height + 48
+        x_offset = "+".join(
+            f"if(between(t\\,{start:.3f}\\,{end:.3f})\\,12*sin(83*t)\\,0)"
+            for start, end in shake_intervals
+        )
+        y_offset = "+".join(
+            f"if(between(t\\,{start:.3f}\\,{end:.3f})\\,10*sin(71*t)\\,0)"
+            for start, end in shake_intervals
+        )
+        final_filters += (
+            f",scale={zoom_width}:{zoom_height},"
+            f"crop={width}:{height}:(iw-ow)/2+{x_offset}:(ih-oh)/2+{y_offset}"
+        )
+    for effect in scene_effects:
+        if effect.kind != "flash":
+            continue
+        start, end = _effect_output_interval(effect, scene, speed)
+        final_filters += (
+            ",drawbox=x=0:y=0:w=iw:h=ih:color=0xF5A623@0.24:t=fill:"
+            f"enable='between(t,{start:.3f},{end:.3f})'"
+        )
     if subtitle_path is not None:
         final_filters += f",{_subtitle_filter(subtitle_path)}"
     return f"{filters};{final_filters}[v]"
+
+
+def _scene_effects(operation: Operation, scene: Scene) -> tuple[VisualEffect, ...]:
+    return tuple(
+        effect
+        for effect in operation.effects
+        if effect.end > scene.start and effect.start < scene.end
+    )
+
+
+def _effect_output_interval(
+    effect: VisualEffect,
+    scene: Scene,
+    speed: float,
+) -> tuple[float, float]:
+    return (
+        (max(effect.start, scene.start) - scene.start) / speed,
+        (min(effect.end, scene.end) - scene.start) / speed,
+    )
 
 
 def capture_scene_frame(
@@ -987,13 +1053,18 @@ def render_scene_video(
     }[resolved_audio]
 
     subtitle_path: Path | None = None
-    if scene.subtitles_enabled and cues:
+    scene_effects = _scene_effects(operation, scene)
+    has_text_effect = any(effect.kind == "shake_text" for effect in scene_effects)
+    include_captions = bool(scene.subtitles_enabled and cues)
+    if include_captions or has_text_effect:
         subtitle_content = build_scene_ass(
-            cues,
+            cues or [],
             scene,
             orientation,
             speaker=subtitle_speaker,
             subtitle_style=subtitle_style,
+            effects=scene_effects,
+            include_captions=include_captions,
         )
         if "Dialogue:" in subtitle_content:
             with tempfile.NamedTemporaryFile(
@@ -1062,6 +1133,92 @@ def validate_scene_timeline(operation: Operation) -> list[Scene]:
     return scenes
 
 
+def render_static_card_video(
+    image_path: str | Path,
+    output_path: str | Path,
+    *,
+    duration: float,
+    orientation: str = "vertical",
+    ffmpeg_path: str = "",
+) -> Path:
+    """Turn one branded PNG into a normalized silent MP4 segment."""
+    if duration <= 0:
+        raise ValueError("A duração da arte precisa ser maior que zero.")
+    if orientation == "vertical":
+        width, height = 1080, 1920
+    elif orientation == "horizontal":
+        width, height = 1920, 1080
+    else:
+        raise ValueError(f"Orientação inválida: {orientation}")
+
+    source = Path(image_path)
+    if not source.exists():
+        raise FileNotFoundError(f"Arte não encontrada: {source}")
+    target = Path(output_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    ffmpeg = find_ffmpeg(ffmpeg_path)
+    fade_duration = min(0.35, duration / 3)
+    fade_out_start = max(0.0, duration - fade_duration)
+    video_filter = (
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,"
+        "setsar=1,fps=30,format=yuv420p,"
+        f"fade=t=in:st=0:d={fade_duration:.3f},"
+        f"fade=t=out:st={fade_out_start:.3f}:d={fade_duration:.3f}"
+    )
+    command = [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-loop",
+        "1",
+        "-framerate",
+        "30",
+        "-i",
+        str(source),
+        "-f",
+        "lavfi",
+        "-i",
+        "anullsrc=channel_layout=stereo:sample_rate=48000",
+        "-t",
+        f"{duration:.3f}",
+        "-vf",
+        video_filter,
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "20",
+        "-threads:v",
+        "2",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        "-ar",
+        "48000",
+        "-ac",
+        "2",
+        "-shortest",
+        "-movflags",
+        "+faststart",
+        str(target),
+    ]
+    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"FFmpeg não conseguiu gerar a cena da arte:\n{completed.stderr.strip()}"
+        )
+    return target
+
+
 def export_final_video(
     video_path: str | Path,
     professor_video_path: str | Path,
@@ -1077,6 +1234,10 @@ def export_final_video(
     subtitle_speaker: str = "",
     subtitle_style: str = "normal",
     transcript_path: str | Path = "",
+    opening_image_path: str | Path = "",
+    closing_image_path: str | Path = "",
+    opening_duration: float = 3.0,
+    closing_duration: float = 4.0,
     progress: Callable[[int, int, str], None] | None = None,
 ) -> Path:
     """Render all selected cuts/scenes and concatenate them into one final MP4."""
@@ -1109,7 +1270,27 @@ def export_final_video(
     with tempfile.TemporaryDirectory(prefix="trade-cutter-final-") as temporary:
         work = Path(temporary)
         segments: list[Path] = []
-        total = len(timeline) + 1
+        has_opening = bool(opening_image_path)
+        has_closing = bool(closing_image_path)
+        active_opening_duration = max(0.0, float(opening_duration)) if has_opening else 0.0
+        active_closing_duration = max(0.0, float(closing_duration)) if has_closing else 0.0
+        total = len(timeline) + int(has_opening) + int(has_closing) + 1
+        completed_steps = 0
+
+        if has_opening:
+            opening_segment = work / "scene-opening.mp4"
+            render_static_card_video(
+                opening_image_path,
+                opening_segment,
+                duration=active_opening_duration,
+                orientation=orientation,
+                ffmpeg_path=ffmpeg,
+            )
+            segments.append(opening_segment)
+            completed_steps += 1
+            if progress:
+                progress(completed_steps, total, "Abertura com o resultado do trade")
+
         for index, (operation, scene) in enumerate(timeline, 1):
             segment = work / f"scene-{index:04d}.mp4"
             render_scene_video(
@@ -1127,8 +1308,27 @@ def export_final_video(
                 subtitle_style=subtitle_style,
             )
             segments.append(segment)
+            completed_steps += 1
             if progress:
-                progress(index, total, f"Cena {index}/{len(timeline)} · {operation.title}")
+                progress(
+                    completed_steps,
+                    total,
+                    f"Cena {index}/{len(timeline)} · {operation.title}",
+                )
+
+        if has_closing:
+            closing_segment = work / "scene-closing.mp4"
+            render_static_card_video(
+                closing_image_path,
+                closing_segment,
+                duration=active_closing_duration,
+                orientation=orientation,
+                ffmpeg_path=ffmpeg,
+            )
+            segments.append(closing_segment)
+            completed_steps += 1
+            if progress:
+                progress(completed_steps, total, "Encerramento com convite para a sala")
 
         concat_file = work / "concat.txt"
         concat_file.write_text(
@@ -1156,6 +1356,8 @@ def export_final_video(
             captions_enabled=burn_subtitles,
             caption_speaker=subtitle_speaker,
             caption_style=subtitle_style,
+            opening_duration=active_opening_duration,
+            closing_duration=active_closing_duration,
         )
         if progress:
             progress(total, total, "Vídeo final e arquivos auxiliares concluídos")

@@ -18,11 +18,12 @@ from trade_cutter.ffmpeg import (
     create_preview_clip,
     cut_video,
     export_final_video,
+    render_static_card_video,
     render_scene_video,
     scene_filter,
     validate_scene_timeline,
 )
-from trade_cutter.models import Cue, Operation, Scene
+from trade_cutter.models import Cue, Operation, Scene, VisualEffect
 from trade_cutter.sidecars import write_export_sidecars
 
 
@@ -372,6 +373,38 @@ def test_scene_ass_can_highlight_each_word_in_gold() -> None:
     assert "&H00DDEBF3" in captions
 
 
+def test_scene_ass_adds_synchronized_effect_text_without_captions() -> None:
+    scene = Scene("effect", 10.0, 20.0, "professor_top")
+    captions = build_scene_ass(
+        [],
+        scene,
+        "vertical",
+        effects=[VisualEffect("e1", "shake_text", 12.0, 12.7, "DELÍCIA!")],
+        include_captions=False,
+    )
+
+    assert "Style: Effect" in captions
+    assert "0:00:02.00,0:00:02.70,Effect" in captions
+    assert "DELÍCIA!" in captions
+    assert r"\fad(60,120)" in captions
+
+
+def test_scene_filter_adds_shake_and_flash_only_during_effect() -> None:
+    op = operation(crop_area="profit_index")
+    scene = Scene("effect", 10.0, 20.0, "professor_top")
+    op.effects = [
+        VisualEffect("shake", "shake_text", 12.0, 12.7, "DELÍCIA!"),
+        VisualEffect("flash", "flash", 14.0, 14.4),
+    ]
+    filter_complex = scene_filter(op, scene, "vertical")
+
+    assert "scale=1128:1968" in filter_complex
+    assert "between(t\\,2.000\\,2.700)" in filter_complex
+    assert "sin(83*t)" in filter_complex
+    assert "drawbox=" in filter_complex
+    assert "between(t,4.000,4.400)" in filter_complex
+
+
 def test_scene_frame_uses_scene_specific_framing() -> None:
     with TemporaryDirectory() as temporary:
         root = Path(temporary)
@@ -474,6 +507,68 @@ def test_final_export_respects_order_and_creates_one_concat() -> None:
         assert (root / "final.edit.json").exists()
 
 
+def test_static_cards_are_rendered_around_the_timeline() -> None:
+    with TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        screen = root / "screen.mp4"
+        professor = root / "professor.mp4"
+        opening = root / "opening.png"
+        closing = root / "closing.png"
+        for path in (screen, professor, opening, closing):
+            path.touch()
+        op = operation()
+        op.scenes = [Scene("main", 10.0, 20.0, "graph_full")]
+        rendered: list[str] = []
+
+        def fake_scene(_screen, _professor, _op, _scene, target, **_kwargs):
+            rendered.append("scene")
+            Path(target).touch()
+            return Path(target)
+
+        def fake_card(image, target, **_kwargs):
+            rendered.append(Path(image).stem)
+            Path(target).touch()
+            return Path(target)
+
+        completed = SimpleNamespace(returncode=0, stderr="")
+        with patch("trade_cutter.ffmpeg.find_ffmpeg", return_value="ffmpeg"), patch(
+            "trade_cutter.ffmpeg.render_scene_video", side_effect=fake_scene
+        ), patch(
+            "trade_cutter.ffmpeg.render_static_card_video", side_effect=fake_card
+        ), patch("trade_cutter.ffmpeg.subprocess.run", return_value=completed):
+            export_final_video(
+                screen,
+                professor,
+                [op],
+                root / "final.mp4",
+                opening_image_path=opening,
+                closing_image_path=closing,
+            )
+        assert rendered == ["opening", "scene", "closing"]
+
+
+def test_static_card_command_matches_scene_encoding() -> None:
+    with TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        source = root / "card.png"
+        source.touch()
+        completed = SimpleNamespace(returncode=0, stderr="")
+        with patch("trade_cutter.ffmpeg.find_ffmpeg", return_value="ffmpeg"), patch(
+            "trade_cutter.ffmpeg.subprocess.run", return_value=completed
+        ) as run:
+            target = render_static_card_video(
+                source,
+                root / "card.mp4",
+                duration=3.0,
+                orientation="vertical",
+            )
+        command = run.call_args.args[0]
+        assert target == root / "card.mp4"
+        assert "scale=1080:1920" in command[command.index("-vf") + 1]
+        assert command[command.index("-c:v") + 1] == "libx264"
+        assert command[command.index("-ar") + 1] == "48000"
+
+
 def test_export_sidecars_retime_transcript_captions_and_edit_map() -> None:
     with TemporaryDirectory() as temporary:
         root = Path(temporary)
@@ -499,6 +594,9 @@ def test_export_sidecars_retime_transcript_captions_and_edit_map() -> None:
                 subtitles_enabled=False,
             ),
             Scene("removed", 30.0, 40.0, "graph_full", skip=True),
+        ]
+        op.effects = [
+            VisualEffect("delicia", "shake_text", 12.0, 12.7, "DELÍCIA!", "delícia")
         ]
         paths = write_export_sidecars(
             root / "video-final.mp4",
@@ -537,6 +635,40 @@ def test_export_sidecars_retime_transcript_captions_and_edit_map() -> None:
         assert edit_map["segments"][1]["output"]["start"] == 5.0
         assert edit_map["segments"][2]["skipped"] is True
         assert edit_map["segments"][2]["output"]["duration"] == 0.0
+        assert edit_map["segments"][0]["effects"][0]["kind"] == "shake_text"
+        assert edit_map["segments"][0]["effects"][0]["output"]["start"] == 1.0
+
+
+def test_sidecars_include_opening_and_closing_durations() -> None:
+    with TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        op = operation()
+        op.cut_start = 10.0
+        op.cut_end = 20.0
+        op.scenes = [Scene("main", 10.0, 20.0, "graph_full")]
+        paths = write_export_sidecars(
+            root / "video-final.mp4",
+            [op],
+            video_path=root / "screen.mp4",
+            professor_video_path=root / "professor.mp4",
+            cues=[Cue(1, 12.0, 14.0, "PROFESSOR", "Fala principal.")],
+            orientation="vertical",
+            project_audio="professor",
+            professor_sync_offset=0.0,
+            captions_enabled=True,
+            caption_speaker="PROFESSOR",
+            opening_duration=3.0,
+            closing_duration=4.0,
+        )
+        transcript = paths["transcript"].read_text(encoding="utf-8")
+        edit_map = json.loads(paths["edit_map"].read_text(encoding="utf-8"))
+        assert "00:00:05.000 --> 00:00:07.000" in transcript
+        assert edit_map["segments"][0]["output"]["start"] == 3.0
+        assert edit_map["output_duration"] == 17.0
+        assert [card["kind"] for card in edit_map["title_cards"]] == [
+            "opening",
+            "closing",
+        ]
 
 
 def main() -> None:
@@ -555,11 +687,16 @@ def main() -> None:
     test_scene_audio_source_and_speed_are_applied_together()
     test_scene_ass_filters_speaker_and_retimes_for_speed()
     test_scene_ass_can_highlight_each_word_in_gold()
+    test_scene_ass_adds_synchronized_effect_text_without_captions()
+    test_scene_filter_adds_shake_and_flash_only_during_effect()
     test_scene_frame_uses_scene_specific_framing()
     test_scene_timeline_requires_complete_coverage()
     test_exact_cut_bounds_trim_previous_scenes()
     test_final_export_respects_order_and_creates_one_concat()
+    test_static_cards_are_rendered_around_the_timeline()
+    test_static_card_command_matches_scene_encoding()
     test_export_sidecars_retime_transcript_captions_and_edit_map()
+    test_sidecars_include_opening_and_closing_durations()
     print("OK: cortes, cinco composições, duas orientações e montagem final.")
 
 

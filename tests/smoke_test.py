@@ -7,7 +7,7 @@ sys.path.insert(0, str(ROOT))
 
 from trade_cutter.detector import DetectionConfig, detect_operations
 from trade_cutter.export import load_operations, save_operations
-from trade_cutter.models import Operation, Scene
+from trade_cutter.models import Operation, Scene, VisualEffect
 from trade_cutter.vtt import parse_vtt
 
 
@@ -56,6 +56,9 @@ def main() -> None:
                 skip=True,
             )
         ]
+        operations[0].effects = [
+            VisualEffect("delicia-1", "shake_text", 12.0, 12.7, "DELÍCIA!", "delícia")
+        ]
         save_operations(target, operations, str(TRANSCRIPT))
         loaded = load_operations(target)
         assert loaded[0].crop_area == "profit_dollar"
@@ -71,6 +74,8 @@ def main() -> None:
         assert loaded[0].scenes[0].audio_mode == "mute"
         assert loaded[0].scenes[0].subtitles_enabled is False
         assert loaded[0].scenes[0].skip is True
+        assert loaded[0].effects[0].kind == "shake_text"
+        assert loaded[0].effects[0].text == "DELÍCIA!"
 
     print(f"OK: {len(cues)} legendas e {len(operations)} candidatos.")
 

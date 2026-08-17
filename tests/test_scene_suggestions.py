@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from trade_cutter.models import Cue, Operation, Scene
+from trade_cutter.keyword_effects import KeywordRule
 from trade_cutter.scene_suggestions import (
     build_scene_suggestion_plan,
     materialize_suggestions,
@@ -139,12 +140,55 @@ def test_materialization_forces_agreed_default_composition() -> None:
     assert normal.subtitles_enabled is True
 
 
+def test_custom_keyword_and_delicia_effect_follow_caption_word_timing() -> None:
+    operation = _operation(0.0, 30.0)
+    rules = [
+        KeywordRule("custom", "arrasa"),
+        KeywordRule("delicia", "delícia", effect="shake_text"),
+    ]
+    plan = suggest_scenes(
+        operation,
+        [Cue(1, 10.0, 15.0, "RAFAEL", "Isso ARRASA, está uma DELICIA agora")],
+        target_speaker="RAFAEL",
+        keyword_rules=rules,
+    )
+
+    assert plan.occurrences[0].keywords == ("arrasa", "delícia")
+    assert len(plan.effects) == 1
+    effect = plan.effects[0]
+    assert effect.kind == "shake_text"
+    assert effect.text == "DELÍCIA!"
+    assert 10.0 < effect.start < effect.end < 15.0
+    normal_scene = next(item for item in plan.scenes if item.kind == "normal")
+    assert normal_scene.speed == 1.0
+
+
+def test_rejecting_occurrence_removes_its_effect() -> None:
+    operation = _operation(0.0, 30.0)
+    initial = suggest_scenes(
+        operation,
+        [Cue(1, 10.0, 12.0, "RAFAEL", "Delícia")],
+        target_speaker="RAFAEL",
+    )
+    plan = build_scene_suggestion_plan(
+        operation,
+        initial.occurrences,
+        selected_occurrence_ids=set(),
+    )
+    materialize_suggestions(operation, plan.scenes, effects=plan.effects)
+
+    assert plan.effects == ()
+    assert operation.effects == []
+
+
 def main() -> None:
     test_keywords_are_limited_to_cut_and_target_speaker()
     test_percentage_lot_and_gain_variants_are_recognized()
     test_unselected_phrase_stays_in_accelerated_content()
     test_long_gap_requires_explicit_jump_approval()
     test_materialization_forces_agreed_default_composition()
+    test_custom_keyword_and_delicia_effect_follow_caption_word_timing()
+    test_rejecting_occurrence_removes_its_effect()
     print("OK: scene keyword suggestions")
 
 

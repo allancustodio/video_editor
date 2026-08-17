@@ -52,16 +52,37 @@ def _timeline_segments(
     project_audio: str,
     professor_sync_offset: float,
     captions_enabled: bool,
+    opening_duration: float = 0.0,
 ) -> tuple[list[tuple[Operation, Scene, float, float]], list[dict[str, Any]]]:
     timeline: list[tuple[Operation, Scene, float, float]] = []
     records: list[dict[str, Any]] = []
-    cursor = 0.0
+    cursor = max(0.0, float(opening_duration))
     for operation, scene in _ordered_timeline(operations):
         speed = _speed(scene)
         output_duration = 0.0 if scene.skip else max(0.0, scene.end - scene.start) / speed
         output_start = cursor
         output_end = cursor + output_duration
         resolved_audio = _resolved_audio(scene, project_audio)
+        effects = [
+            {
+                "id": effect.id,
+                "kind": effect.kind,
+                "keyword": effect.keyword,
+                "text": effect.text,
+                "source": {
+                    "start": max(effect.start, scene.start),
+                    "end": min(effect.end, scene.end),
+                },
+                "output": {
+                    "start": output_start
+                    + (max(effect.start, scene.start) - scene.start) / speed,
+                    "end": output_start
+                    + (min(effect.end, scene.end) - scene.start) / speed,
+                },
+            }
+            for effect in operation.effects
+            if not scene.skip and effect.end > scene.start and effect.start < scene.end
+        ]
         if not scene.skip:
             timeline.append((operation, scene, output_start, output_end))
         records.append(
@@ -88,6 +109,7 @@ def _timeline_segments(
                 "captions_enabled": bool(
                     captions_enabled and scene.subtitles_enabled and not scene.skip
                 ),
+                "effects": effects,
                 "crop": {
                     "area": operation.crop_area,
                     "x": operation.crop_x,
@@ -208,7 +230,11 @@ def write_export_sidecars(
     captions_enabled: bool,
     caption_speaker: str,
     caption_style: str = "normal",
+    opening_duration: float = 0.0,
+    closing_duration: float = 0.0,
 ) -> dict[str, Path]:
+    opening_duration = max(0.0, float(opening_duration))
+    closing_duration = max(0.0, float(closing_duration))
     paths = sidecar_paths(output_path)
     timeline, segments = _timeline_segments(
         operations,
@@ -216,8 +242,33 @@ def write_export_sidecars(
         project_audio=project_audio,
         professor_sync_offset=professor_sync_offset,
         captions_enabled=captions_enabled,
+        opening_duration=opening_duration,
     )
-    total_duration = segments[-1]["output"]["end"] if segments else 0.0
+    content_end = segments[-1]["output"]["end"] if segments else opening_duration
+    total_duration = content_end + closing_duration
+    title_cards: list[dict[str, Any]] = []
+    if opening_duration:
+        title_cards.append(
+            {
+                "kind": "opening",
+                "output": {
+                    "start": 0.0,
+                    "end": opening_duration,
+                    "duration": opening_duration,
+                },
+            }
+        )
+    if closing_duration:
+        title_cards.append(
+            {
+                "kind": "closing",
+                "output": {
+                    "start": content_end,
+                    "end": total_duration,
+                    "duration": closing_duration,
+                },
+            }
+        )
     edit_map = {
         "version": 1,
         "video": str(Path(output_path).resolve()),
@@ -231,6 +282,7 @@ def write_export_sidecars(
         "caption_style": caption_style,
         "captions_enabled": captions_enabled,
         "output_duration": total_duration,
+        "title_cards": title_cards,
         "segments": segments,
     }
     paths["edit_map"].write_text(

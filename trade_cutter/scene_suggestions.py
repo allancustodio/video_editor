@@ -5,7 +5,9 @@ from dataclasses import dataclass, replace
 from typing import Iterable
 
 from .detector import normalize
-from .models import Cue, Operation, Scene
+from .keyword_effects import KeywordRule, default_keyword_rules
+from .models import Cue, Operation, Scene, VisualEffect
+from .word_timing import find_phrase_intervals
 
 
 DEFAULT_SCENE_KEYWORDS = ("stop", "lote", "parcial", "alvo", "porcento", "gain")
@@ -31,6 +33,7 @@ class KeywordOccurrence:
     speaker: str
     text: str
     keywords: tuple[str, ...]
+    effects: tuple[VisualEffect, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +62,7 @@ class SceneSuggestionPlan:
     occurrences: tuple[KeywordOccurrence, ...]
     selected_occurrence_ids: frozenset[str]
     matched_keyword_count: int
+    effects: tuple[VisualEffect, ...] = ()
 
     @property
     def relevant_cue_count(self) -> int:
@@ -79,6 +83,7 @@ def suggest_scenes(
     target_fast_duration: float = 5.0,
     minimum_gap: float = 12.0,
     max_speed: float = 100.0,
+    keyword_rules: Iterable[KeywordRule] | None = None,
 ) -> SceneSuggestionPlan:
     """Find keyword phrases and initially keep every occurrence at normal speed."""
     occurrences = find_keyword_occurrences(
@@ -87,6 +92,7 @@ def suggest_scenes(
         target_speaker=target_speaker,
         context_before=context_before,
         context_after=context_after,
+        keyword_rules=keyword_rules,
     )
     return build_scene_suggestion_plan(
         operation,
@@ -105,11 +111,18 @@ def find_keyword_occurrences(
     target_speaker: str,
     context_before: float = 3.0,
     context_after: float = 3.0,
+    keyword_rules: Iterable[KeywordRule] | None = None,
 ) -> tuple[KeywordOccurrence, ...]:
     """Return one approval item per matching VTT cue inside the selected cut."""
     before = max(0.0, float(context_before))
     after = max(0.0, float(context_after))
     wanted_speaker = normalize(target_speaker)
+    rules = tuple(keyword_rules if keyword_rules is not None else default_keyword_rules())
+    active_rules = tuple(
+        rule
+        for rule in rules
+        if rule.enabled and (rule.keep_normal or rule.effect != "none")
+    )
     occurrences: list[KeywordOccurrence] = []
     for cue in cues:
         if cue.end <= operation.cut_start or cue.start >= operation.cut_end:
@@ -117,13 +130,40 @@ def find_keyword_occurrences(
         if wanted_speaker and wanted_speaker not in normalize(cue.speaker):
             continue
         text = normalize(cue.text)
-        matched = tuple(
-            keyword
-            for keyword in DEFAULT_SCENE_KEYWORDS
-            if _KEYWORD_PATTERNS[keyword].search(text)
+        matched_rules = tuple(
+            rule for rule in active_rules if _rule_matches(rule, text)
         )
-        if not matched:
+        if not matched_rules:
             continue
+        effects: list[VisualEffect] = []
+        for rule in matched_rules:
+            if rule.effect == "none":
+                continue
+            intervals = find_phrase_intervals(
+                cue.text,
+                cue.start,
+                cue.end,
+                rule.expression,
+            )
+            if not intervals:
+                intervals = ((cue.start, cue.end),)
+            for effect_index, (word_start, word_end) in enumerate(intervals, 1):
+                center = word_start + (word_end - word_start) / 2
+                effect_start = max(operation.cut_start, center - 0.35)
+                effect_end = min(operation.cut_end, center + 0.35)
+                effects.append(
+                    VisualEffect(
+                        id=(
+                            f"effect-{cue.index}-{rule.id}-{effect_index}-"
+                            f"{int(effect_start * 1000)}"
+                        ),
+                        kind=rule.effect,
+                        start=effect_start,
+                        end=effect_end,
+                        text=f"{rule.expression.upper()}!",
+                        keyword=rule.expression,
+                    )
+                )
         occurrences.append(
             KeywordOccurrence(
                 id=f"cue-{cue.index}-{int(cue.start * 1000)}",
@@ -134,7 +174,8 @@ def find_keyword_occurrences(
                 end=min(operation.cut_end, cue.end + after),
                 speaker=cue.speaker,
                 text=" ".join(cue.text.split()),
-                keywords=matched,
+                keywords=tuple(rule.expression for rule in matched_rules),
+                effects=tuple(effects),
             )
         )
     return tuple(occurrences)
@@ -213,11 +254,17 @@ def build_scene_suggestion_plan(
         for item in selected
         for keyword in item.keywords
     }
+    selected_effects = tuple(
+        effect
+        for item in selected
+        for effect in item.effects
+    )
     return SceneSuggestionPlan(
         scenes=tuple(_merge_normal(proposed)),
         occurrences=occurrence_values,
         selected_occurrence_ids=selected_ids,
         matched_keyword_count=len(matched_keywords),
+        effects=selected_effects,
     )
 
 
@@ -227,6 +274,7 @@ def materialize_suggestions(
     *,
     approved_jumps: set[int] | None = None,
     max_speed: float = 100.0,
+    effects: Iterable[VisualEffect] = (),
 ) -> list[Scene]:
     """Create editable scenes using the agreed default composition."""
     existing = sorted(operation.ensure_scenes(), key=lambda item: (item.start, item.end))
@@ -259,7 +307,22 @@ def materialize_suggestions(
             )
         )
     operation.scenes = generated
+    operation.effects = list(effects)
     return generated
+
+
+def _rule_matches(rule: KeywordRule, normalized_text: str) -> bool:
+    expression = normalize(rule.expression)
+    if not expression:
+        return False
+    legacy = _KEYWORD_PATTERNS.get(expression)
+    if legacy is not None:
+        return bool(legacy.search(normalized_text))
+    parts = re.findall(r"\w+|%", expression)
+    if not parts:
+        return expression in normalized_text
+    pattern = r"\W+".join(re.escape(part) for part in parts)
+    return bool(re.search(rf"(?<!\w){pattern}(?!\w)", normalized_text))
 
 
 def _gap_suggestion(
