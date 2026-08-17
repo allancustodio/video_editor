@@ -56,7 +56,13 @@ from trade_cutter.scene_suggestions import (
     suggest_scenes,
 )
 from trade_cutter.sidecars import sidecar_paths
-from trade_cutter.timecode import format_timecode, normalize_timecode, parse_timecode
+from trade_cutter.timecode import (
+    clock_time_to_video_time,
+    format_timecode,
+    normalize_timecode,
+    parse_clock_time,
+    parse_timecode,
+)
 from trade_cutter.vtt import parse_vtt, search_cues, transcript_between
 
 
@@ -139,6 +145,22 @@ def _normalize_timecode_widget(key: str) -> None:
             st.session_state[key] = normalized
     except ValueError:
         pass
+
+
+def _invalidate_clock_sync() -> None:
+    st.session_state.pop("clock_sync", None)
+    for key in list(st.session_state):
+        if key.startswith("source_frame_preview_annotated_clock_"):
+            st.session_state.pop(key, None)
+
+
+def _clock_sync_video_time_changed(key: str) -> None:
+    _normalize_timecode_widget(key)
+    _invalidate_clock_sync()
+
+
+def _clock_sync_clock_time_changed() -> None:
+    _invalidate_clock_sync()
 
 
 def _scene_signature(
@@ -1035,6 +1057,62 @@ def render_source_video_preview(
         )
 
 
+def render_source_frame_preview(
+    video_path: str,
+    time_seconds: float,
+    *,
+    widget_key: str,
+    caption: str,
+    ffmpeg_path: str = "",
+) -> bool:
+    """Capture and display one source-video frame, returning whether it is current."""
+    if not video_path or not Path(video_path).exists():
+        st.warning("Carregue o vídeo da tela/gráficos para capturar este momento.")
+        return False
+
+    source = Path(video_path)
+    source_stat = source.stat()
+    signature_source = "|".join(
+        (
+            "streamlit-source-frame-v1",
+            str(source.resolve()),
+            str(source_stat.st_size),
+            str(source_stat.st_mtime_ns),
+            f"{max(0.0, float(time_seconds)):.3f}",
+        )
+    )
+    signature = hashlib.sha1(signature_source.encode("utf-8")).hexdigest()
+    state_key = f"source_frame_preview_{widget_key}"
+
+    if st.button(
+        "Capturar/atualizar imagem",
+        key=f"capture_source_frame_{widget_key}",
+        width="stretch",
+    ):
+        try:
+            with st.spinner("Capturando o relógio no vídeo da tela..."):
+                image = capture_frame(
+                    source,
+                    max(0.0, float(time_seconds)),
+                    ffmpeg_path=ffmpeg_path,
+                )
+            st.session_state[state_key] = {
+                "image": image,
+                "signature": signature,
+            }
+        except Exception as error:
+            st.session_state.pop(state_key, None)
+            st.error(str(error))
+
+    preview = st.session_state.get(state_key)
+    if isinstance(preview, dict) and preview.get("signature") == signature:
+        st.image(preview["image"], caption=caption, width="stretch")
+        return True
+    if preview:
+        st.info("A captura está desatualizada. Atualize-a para conferir este instante.")
+    return False
+
+
 def apply_rows(
     operations: list[Operation],
     rows,
@@ -1121,10 +1199,21 @@ def clear_loaded_recording_state() -> None:
         "crop_preview_image",
         "vertical_frame_preview",
         "vertical_preview_path",
+        "clock_sync",
+        "clock_sync_video_time_input",
+        "clock_sync_clock_time_input",
+        "annotated_cut_time",
     ):
         st.session_state.pop(key, None)
     for key in list(st.session_state):
-        if key.startswith(("source_preview_result_", "load_source_preview_")):
+        if key.startswith(
+            (
+                "source_preview_result_",
+                "load_source_preview_",
+                "source_frame_preview_",
+                "capture_source_frame_",
+            )
+        ):
             st.session_state.pop(key, None)
 
 
@@ -1179,6 +1268,20 @@ def load_exported_project(path: str) -> Path:
     st.session_state[f"final_professor_sync_offset_{widget_generation}"] = float(
         settings.get("professor_sync_offset", 0.0)
     )
+    clock_sync_video_time = settings.get("clock_sync_video_time")
+    clock_sync_clock_time = settings.get("clock_sync_clock_time")
+    if clock_sync_video_time is not None and clock_sync_clock_time is not None:
+        clock_sync = {
+            "video_time": float(clock_sync_video_time),
+            "clock_time": float(clock_sync_clock_time),
+        }
+        st.session_state["clock_sync"] = clock_sync
+        st.session_state["clock_sync_video_time_input"] = format_timecode(
+            clock_sync["video_time"]
+        )
+        st.session_state["clock_sync_clock_time_input"] = format_timecode(
+            clock_sync["clock_time"]
+        )
     st.session_state[f"final_audio_source_label_{widget_generation}"] = (
         "Vídeo da tela"
         if settings.get("audio_source") == "screen"
@@ -1327,6 +1430,7 @@ with st.sidebar:
         "Vídeo da tela",
         placeholder=r"C:\Videos\gravacao-tela.mp4",
         key="video_path_input",
+        on_change=_invalidate_clock_sync,
     )
     professor_video_path = st.text_input(
         "Vídeo do professor (opcional)",
@@ -1638,22 +1742,106 @@ if cues:
 
 st.subheader("Adicionar corte por horário anotado")
 with st.container(border=True):
+    st.markdown("**1. Sincronize o relógio com o vídeo da tela/gráficos**")
+    st.session_state.setdefault("clock_sync_video_time_input", "00:00:00")
+    sync_video_column, sync_clock_column = st.columns(2)
+    sync_video_time_value = sync_video_column.text_input(
+        "Posição correspondente no vídeo",
+        placeholder="HH:MM:SS",
+        help="Escolha um instante em que o relógio esteja claramente visível.",
+        key="clock_sync_video_time_input",
+        on_change=_clock_sync_video_time_changed,
+        args=("clock_sync_video_time_input",),
+    )
+    sync_clock_time_value = sync_clock_column.text_input(
+        "Horário mostrado no relógio",
+        placeholder="HH:MM:SS",
+        help="Digite exatamente o horário visível na captura abaixo.",
+        key="clock_sync_clock_time_input",
+        on_change=_clock_sync_clock_time_changed,
+    )
+
+    sync_video_time = None
+    try:
+        sync_video_time = parse_timecode(sync_video_time_value)
+    except ValueError as error:
+        st.warning(str(error))
+
+    sync_frame_ready = False
+    if sync_video_time is not None:
+        sync_frame_ready = render_source_frame_preview(
+            video_path,
+            sync_video_time,
+            widget_key="clock_sync",
+            caption=(
+                "Vídeo da tela/gráficos em "
+                f"{format_timecode(sync_video_time)} — confira o relógio nesta imagem"
+            ),
+            ffmpeg_path=ffmpeg_path,
+        )
+
+    if st.button(
+        "Confirmar sincronização",
+        type="primary",
+        disabled=not sync_frame_ready or not sync_clock_time_value.strip(),
+        width="stretch",
+    ):
+        try:
+            sync_clock_time = parse_clock_time(sync_clock_time_value)
+            if sync_video_time is None or sync_clock_time is None:
+                raise ValueError("Informe os dois horários da sincronização.")
+            st.session_state["clock_sync"] = {
+                "video_time": sync_video_time,
+                "clock_time": sync_clock_time,
+            }
+            st.rerun()
+        except ValueError as error:
+            st.error(str(error))
+
+    clock_sync = st.session_state.get("clock_sync")
+    if isinstance(clock_sync, dict):
+        st.success(
+            f"Sincronização confirmada: relógio "
+            f"{format_timecode(clock_sync['clock_time'])} = vídeo "
+            f"{format_timecode(clock_sync['video_time'])}."
+        )
+    else:
+        st.caption(
+            "Capture a imagem, leia o relógio exibido nela e confirme a correspondência."
+        )
+
+    st.divider()
+    st.markdown("**2. Localize a anotação pelo horário do relógio**")
     annotated_time_value = st.text_input(
         "Horário anotado",
         placeholder="HH:MM:SS",
-        help="Exemplo: 01:23:45",
+        help="Exemplo: 14:45:20. Este é o horário real anotado durante a sala.",
         key="annotated_cut_time",
-        on_change=_normalize_timecode_widget,
-        args=("annotated_cut_time",),
+        disabled=not isinstance(clock_sync, dict),
     )
-    if annotated_time_value.strip():
+    if not isinstance(clock_sync, dict):
+        st.info("Confirme a sincronização acima para localizar uma anotação.")
+    elif annotated_time_value.strip():
         try:
-            annotated_time = parse_timecode(annotated_time_value)
-            if annotated_time is None:
-                raise ValueError("Informe um horário válido.")
+            annotated_clock_time = parse_clock_time(annotated_time_value)
+            if annotated_clock_time is None:
+                raise ValueError("Informe um horário anotado válido.")
+            annotated_video_time = clock_time_to_video_time(
+                annotated_clock_time,
+                clock_sync["clock_time"],
+                clock_sync["video_time"],
+            )
             annotated_key = hashlib.sha1(
-                f"{annotated_time:.3f}".encode("utf-8")
+                (
+                    f"{annotated_clock_time:.3f}-"
+                    f"{annotated_video_time:.3f}"
+                ).encode("utf-8")
             ).hexdigest()[:10]
+
+            st.success(
+                f"Horário anotado {format_timecode(annotated_clock_time)} "
+                f"→ posição {format_timecode(annotated_video_time)} no vídeo."
+            )
 
             annotated_left, annotated_right = st.columns([1, 1])
             with annotated_left:
@@ -1662,19 +1850,30 @@ with st.container(border=True):
                     st.code(
                         transcript_between(
                             cues,
-                            max(0.0, annotated_time - 30),
-                            annotated_time + 30,
+                            max(0.0, annotated_video_time - 30),
+                            annotated_video_time + 30,
                         ),
                         language=None,
                     )
                 else:
                     st.caption("Carregue uma transcrição para visualizar o contexto.")
             with annotated_right:
-                st.markdown("**Vídeo nesse ponto**")
+                st.markdown("**Captura para conferir o relógio**")
+                render_source_frame_preview(
+                    video_path,
+                    annotated_video_time,
+                    widget_key=f"annotated_clock_{annotated_key}",
+                    caption=(
+                        f"Vídeo em {format_timecode(annotated_video_time)} — "
+                        f"o relógio deve mostrar {format_timecode(annotated_clock_time)}"
+                    ),
+                    ffmpeg_path=ffmpeg_path,
+                )
+                st.markdown("**Prévia em vídeo (opcional)**")
                 render_source_video_preview(
                     video_path,
-                    max(0.0, annotated_time - 5),
-                    annotated_time + 30,
+                    max(0.0, annotated_video_time - 5),
+                    annotated_video_time + 30,
                     widget_key=f"annotated_{annotated_key}",
                     ffmpeg_path=ffmpeg_path,
                 )
@@ -1682,18 +1881,18 @@ with st.container(border=True):
             with st.form(f"annotated_cut_{annotated_key}"):
                 annotated_title = st.text_input(
                     "Título do corte por horário",
-                    value=f"Corte {format_timecode(annotated_time)}",
+                    value=f"Corte {format_timecode(annotated_clock_time)}",
                 )
                 time_left, time_middle, time_right = st.columns([1, 1, 1])
                 annotated_start_value = time_left.text_input(
-                    "Início do corte",
-                    value=format_timecode(annotated_time),
-                    help="Começa exatamente no horário anotado; o contexto aparece apenas na prévia.",
+                    "Início do corte no vídeo",
+                    value=format_timecode(annotated_video_time),
+                    help="Posição relativa calculada; pode ser ajustada normalmente.",
                 )
                 annotated_end_value = time_middle.text_input(
-                    "Fim do corte",
-                    value=format_timecode(annotated_time + 30),
-                    help="Padrão: 30 segundos depois do horário anotado.",
+                    "Fim do corte no vídeo",
+                    value=format_timecode(annotated_video_time + 30),
+                    help="Padrão: 30 segundos depois da posição calculada.",
                 )
                 annotated_area_label = time_right.selectbox(
                     "Área do corte",
@@ -1710,21 +1909,27 @@ with st.container(border=True):
                 try:
                     nearby_cues = sorted(
                         cues,
-                        key=lambda cue: abs(cue.start - annotated_time),
+                        key=lambda cue: abs(cue.start - annotated_video_time),
                     ) if cues else []
                     evidence = (
                         [nearby_cues[0].text]
                         if nearby_cues
-                        else [f"Horário anotado: {format_timecode(annotated_time)}"]
+                        else [
+                            f"Horário anotado: {format_timecode(annotated_clock_time)} "
+                            f"(vídeo: {format_timecode(annotated_video_time)})"
+                        ]
                     )
                     manual_operation = add_manual_operation(
                         title=annotated_title,
                         start_value=annotated_start_value,
                         end_value=annotated_end_value,
-                        entry_time=annotated_time,
+                        entry_time=annotated_video_time,
                         area_label=annotated_area_label,
                         evidence=evidence,
-                        identity=f"annotated-{annotated_time:.3f}",
+                        identity=(
+                            f"annotated-{annotated_clock_time:.3f}-"
+                            f"{annotated_video_time:.3f}"
+                        ),
                         presets=presets,
                     )
                     st.session_state["manual_cut_added_message"] = (
@@ -2044,6 +2249,16 @@ if operations:
                     settings={
                         "orientation": orientation,
                         "professor_sync_offset": professor_sync_offset,
+                        "clock_sync_video_time": (
+                            clock_sync.get("video_time")
+                            if isinstance(clock_sync, dict)
+                            else None
+                        ),
+                        "clock_sync_clock_time": (
+                            clock_sync.get("clock_time")
+                            if isinstance(clock_sync, dict)
+                            else None
+                        ),
                         "audio_source": audio_source,
                         "subtitles_enabled": subtitles_enabled,
                         "subtitles_only_presenter": subtitles_only_presenter,

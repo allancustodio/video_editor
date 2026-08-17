@@ -4,6 +4,9 @@ import re
 
 
 _SECONDS_RE = re.compile(r"^\d+(?:[\.,]\d{1,3})?$")
+_CLOCK_RE = re.compile(
+    r"^(?P<hours>\d{1,2}):(?P<minutes>\d{2}):(?P<seconds>\d{2})$"
+)
 
 
 def parse_timecode(value: str | int | float | None) -> float | None:
@@ -45,6 +48,42 @@ def normalize_timecode(value: str | int | float | None) -> str:
     if parsed is None:
         return ""
     return format_timecode(parsed, milliseconds=not float(parsed).is_integer())
+
+
+def parse_clock_time(value: str | None) -> float | None:
+    """Parse a wall-clock value in HH:MM:SS form into seconds since midnight."""
+    if value is None:
+        return None
+
+    raw = str(value).strip()
+    if not raw:
+        return None
+    match = _CLOCK_RE.fullmatch(raw)
+    if match is None:
+        raise ValueError(f"Horário de relógio inválido: {value!r}. Use HH:MM:SS.")
+
+    hours = int(match.group("hours"))
+    minutes = int(match.group("minutes"))
+    seconds = int(match.group("seconds"))
+    if hours > 23 or minutes > 59 or seconds > 59:
+        raise ValueError(f"Horário de relógio inválido: {value!r}. Use HH:MM:SS.")
+    return float(hours * 3600 + minutes * 60 + seconds)
+
+
+def clock_time_to_video_time(
+    annotated_clock_time: float,
+    reference_clock_time: float,
+    reference_video_time: float,
+) -> float:
+    """Convert a wall-clock annotation to the recording's relative timeline."""
+    video_time = (
+        float(reference_video_time)
+        + float(annotated_clock_time)
+        - float(reference_clock_time)
+    )
+    if video_time < 0:
+        raise ValueError("O horário anotado fica antes do início da gravação.")
+    return video_time
 
 
 def format_timecode(seconds: float | int | None, milliseconds: bool = False) -> str:

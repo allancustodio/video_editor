@@ -239,15 +239,20 @@ O corte começa exatamente na ocorrência e sugere 30 segundos depois para o fim
 
 Use **Adicionar corte por horário anotado** quando você já tiver marcado um momento da aula:
 
-1. Informe o horário em HH:MM:SS, por exemplo 01:23:45.
-2. Confira o vídeo e, quando houver VTT carregado, a transcrição ao redor.
-3. Edite título, início, fim e área.
-4. Clique em **Adicionar corte pelo horário**.
+1. Informe uma posição do vídeo da tela/gráficos e capture a imagem desse instante.
+2. Leia o relógio mostrado na captura, informe-o em HH:MM:SS e confirme a sincronização.
+3. Digite o horário real da sua anotação, também em HH:MM:SS.
+4. Confira a captura calculada: o relógio da imagem deve coincidir com a anotação.
+5. Edite título, início, fim e área e clique em **Adicionar corte pelo horário**.
 
-O intervalo sugerido começa exatamente no horário informado e termina 30 segundos depois. O contexto anterior aparece somente na prévia. Esse corte também entra na tabela com a fonte manual e permanece preservado durante uma reanálise das regras.
+O sistema converte o horário real para a posição relativa do vídeo antes de consultar
+a transcrição, gerar a prévia e criar o corte. O intervalo sugerido começa nessa posição
+e termina 30 segundos depois. A sincronização usa sempre o vídeo da tela/gráficos, no
+qual o relógio está visível, e é salva no projeto exportado.
 
-Horários incompletos são completados automaticamente. Por exemplo, `02:30:`
-vira `02:30:00`, `02::` vira `02:00:00` e `::15` vira `00:00:15`.
+O horário do relógio e o horário anotado devem ser informados por completo. Por exemplo,
+`14:45:20`. Os campos relativos do vídeo continuam aceitando e normalizando valores
+incompletos.
 
 ## Gerenciamento de regras
 
