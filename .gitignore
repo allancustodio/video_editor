@@ -6,3 +6,4 @@ output/clips/*.mp4
 .env
 user_config.json
 user_rules.json
+/output/*
