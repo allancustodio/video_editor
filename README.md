@@ -148,6 +148,53 @@ acompanha a fala, mesmo quando ela está dentro de uma legenda maior. Tudo é
 renderizado no próprio FFmpeg, sem uma etapa externa. Ao desmarcar uma ocorrência
 na revisão da proposta, tanto a região em 1x quanto seu efeito são removidos.
 
+### Prova social do chat do Zoom
+
+A área **Prova social do chat do Zoom** funciona de forma independente dos
+cortes. Ela procura arquivos `*Chat.txt` na pasta do vídeo, interpreta mensagens
+multilinha, respostas e reações e faz uma triagem totalmente local, sem IA ou
+API.
+
+Em **Professores e palavras**, é possível editar os nomes completos dos autores
+internos que devem ser excluídos, seus apelidos, as expressões positivas e
+negativas, a pontuação, os limites e o intervalo de agrupamento. A exclusão de
+autor usa o nome completo; apelidos servem somente para reconhecer menções nos
+textos.
+
+Depois da análise, a tabela informa a pontuação e todas as regras encontradas.
+Os candidatos fortes vêm selecionados, mas cada mensagem pode ser conferida com
+o contexto, aprovada, descartada e reordenada. A geração produz:
+
+- painéis verticais paginados com até oito comentários no estilo do Zoom;
+- uma arte individual opcional para cada depoimento;
+- um ZIP com todas as imagens;
+- um JSON com a seleção aprovada para reutilização futura;
+- uma cena MP4 vertical independente, com os comentários aparecendo em sequência.
+
+As artes exibem somente o primeiro nome. O nome completo permanece nos dados
+internos para identidade, exclusão e atribuição consistente de cor. A data e o
+horário são reconstruídos a partir do nome GMT do arquivo e podem ser ajustados
+na interface.
+
+A paginação pode ser automática ou manual. No modo manual, informe a quantidade
+de comentários de cada página, como `6, 4, 5`; os valores consomem a ordem da
+tabela de revisão. A interface calcula a ocupação de cada página, bloqueia
+combinações que ultrapassem a área segura e pode sobrepor as zonas mortas na
+prévia. Esses guias nunca entram nos PNGs baixados.
+O mesmo layout protege as duas laterais, o topo e o rodapé para que as artes
+possam ser reutilizadas tanto em Stories quanto em Reels e, futuramente, no vídeo.
+
+Ao gerar as imagens, os painéis, as artes individuais, o ZIP e o JSON aprovado
+são gravados automaticamente na **Pasta de saída** configurada na interface. Os
+botões de download continuam disponíveis como alternativa. Gerar somente o vídeo
+também salva nesse local o JSON que descreve a seleção usada.
+
+Em **Vídeo animado da prova social**, o intervalo entre comentários, a pausa na
+troca de página, o tempo final de leitura, o som e seu volume são configuráveis.
+O pequeno pop é sintetizado pelo FFmpeg, sem arquivo ou serviço externo. O MP4 é
+salvo na pasta de saída compartilhada, mas não é inserido automaticamente no
+vídeo final.
+
 ## Modo sem interface
 
 ### Somente analisar

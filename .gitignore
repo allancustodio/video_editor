@@ -6,5 +6,6 @@ output/clips/*.mp4
 .env
 user_config.json
 user_rules.json
+social_proof_rules.json
 scene_keyword_rules.json
 /output/*

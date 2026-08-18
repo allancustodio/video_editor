@@ -5,8 +5,10 @@ import hashlib
 import os
 import re
 import tempfile
+import zipfile
 from dataclasses import replace
 from datetime import date, datetime
+from io import BytesIO
 from pathlib import Path
 
 import pandas as pd
@@ -67,6 +69,30 @@ from trade_cutter.scene_suggestions import (
     suggest_scenes,
 )
 from trade_cutter.sidecars import sidecar_paths
+from trade_cutter.social_proof import (
+    RULE_KIND_LABELS,
+    FeedbackCandidate,
+    SocialProofConfig,
+    analyze_zoom_chat,
+    approved_feedbacks_json,
+    default_social_proof_config,
+    discover_zoom_chat_files,
+    estimate_feedback_video_duration,
+    feedback_page_occupancy,
+    feedback_rule_records,
+    feedback_rules_from_records,
+    infer_chat_date,
+    load_social_proof_config,
+    plan_feedback_pages,
+    render_feedback_panels,
+    render_feedback_video,
+    render_individual_feedback,
+    render_safe_area_preview,
+    save_social_proof_config,
+    staff_from_records,
+    staff_records,
+    validate_social_proof_config,
+)
 from trade_cutter.timecode import (
     clock_time_to_video_time,
     format_timecode,
@@ -85,6 +111,9 @@ DEFAULT_RECORDINGS_FOLDER = r"C:\Users\allan\OneDrive\Vídeos\Aulas"
 RULES_PATH = Path(os.getenv("TRADE_CUTTER_RULES_PATH", "user_rules.json"))
 SCENE_KEYWORDS_PATH = Path(
     os.getenv("TRADE_CUTTER_SCENE_KEYWORDS_PATH", "scene_keyword_rules.json")
+)
+SOCIAL_PROOF_CONFIG_PATH = Path(
+    os.getenv("TRADE_CUTTER_SOCIAL_PROOF_PATH", "social_proof_rules.json")
 )
 
 AREA_LABELS = {
@@ -216,6 +245,818 @@ def cached_trade_card(
         points,
         template_path=template_path,
     )
+
+
+def _social_proof_zip(
+    panels: list[bytes],
+    individuals: list[tuple[FeedbackCandidate, bytes]],
+    approved_json: bytes,
+    feedback_date: date,
+) -> bytes:
+    output = BytesIO()
+    date_prefix = feedback_date.isoformat()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for index, content in enumerate(panels, 1):
+            archive.writestr(
+                f"{date_prefix}_depoimentos-painel-{index:02d}.png",
+                content,
+            )
+        for index, (candidate, content) in enumerate(individuals, 1):
+            safe_name = re.sub(r"[^a-z0-9]+", "-", candidate.display_name.casefold()).strip("-")
+            archive.writestr(
+                f"{date_prefix}_depoimento-{index:02d}-{safe_name or 'participante'}.png",
+                content,
+            )
+        archive.writestr(f"{date_prefix}_feedbacks-aprovados.json", approved_json)
+    return output.getvalue()
+
+
+def _save_social_proof_outputs(
+    output_dir: str | Path,
+    panels: list[bytes],
+    individuals: list[tuple[FeedbackCandidate, bytes]],
+    approved_json: bytes,
+    feedback_date: date,
+) -> dict[str, object]:
+    target_dir = Path(output_dir)
+    if not str(output_dir).strip():
+        raise ValueError("Informe a pasta de saída antes de salvar a prova social.")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    date_prefix = feedback_date.isoformat()
+    panel_paths: list[Path] = []
+    for index, content in enumerate(panels, 1):
+        target = target_dir / f"{date_prefix}_depoimentos-painel-{index:02d}.png"
+        target.write_bytes(content)
+        panel_paths.append(target)
+    individual_paths: list[Path] = []
+    for index, (candidate, content) in enumerate(individuals, 1):
+        safe_name = re.sub(
+            r"[^a-z0-9]+", "-", candidate.display_name.casefold()
+        ).strip("-")
+        target = target_dir / (
+            f"{date_prefix}_depoimento-{index:02d}-{safe_name or 'participante'}.png"
+        )
+        target.write_bytes(content)
+        individual_paths.append(target)
+    json_path = target_dir / f"{date_prefix}_feedbacks-aprovados.json"
+    json_path.write_bytes(approved_json)
+    archive_path = target_dir / f"{date_prefix}_prova-social.zip"
+    archive_path.write_bytes(
+        _social_proof_zip(panels, individuals, approved_json, feedback_date)
+    )
+    return {
+        "directory": target_dir,
+        "panels": panel_paths,
+        "individuals": individual_paths,
+        "json": json_path,
+        "archive": archive_path,
+    }
+
+
+def _parse_social_page_sizes(value: str, expected_total: int) -> list[int]:
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError("Informe a quantidade de comentários de cada página.")
+    if re.sub(r"[\d\s,;]+", "", cleaned):
+        raise ValueError("Use somente números separados por vírgula. Exemplo: 6, 4, 5.")
+    sizes = [int(item) for item in re.findall(r"\d+", cleaned)]
+    if any(size < 1 or size > 8 for size in sizes):
+        raise ValueError("Cada página precisa ter entre 1 e 8 comentários.")
+    if sum(sizes) != expected_total:
+        raise ValueError(
+            f"A distribuição soma {sum(sizes)}, mas existem {expected_total} selecionados."
+        )
+    return sizes
+
+
+def render_social_proof_section(
+    video_path: str,
+    *,
+    output_dir: str,
+    ffmpeg_path: str,
+) -> None:
+    try:
+        current_config = load_social_proof_config(SOCIAL_PROOF_CONFIG_PATH)
+    except ValueError as error:
+        st.error(str(error))
+        st.info("As regras padrão foram carregadas para permitir a recuperação.")
+        current_config = default_social_proof_config()
+
+    with st.expander("Prova social do chat do Zoom", expanded=False):
+        st.caption(
+            "Esta área é independente dos cortes. A análise acontece localmente, mostra "
+            "por que cada mensagem foi encontrada e só gera artes após sua aprovação."
+        )
+        analysis_tab, settings_tab = st.tabs(["Analisar e gerar", "Professores e palavras"])
+
+        with analysis_tab:
+            discovered = discover_zoom_chat_files(video_path)
+            selected_discovered = ""
+            if discovered:
+                selected_discovered = st.selectbox(
+                    "Chat encontrado na pasta da gravação",
+                    options=[str(path) for path in discovered],
+                    format_func=lambda value: Path(value).name,
+                    key="social_chat_discovered",
+                )
+                st.caption(
+                    f"{len(discovered)} arquivo(s) de chat encontrado(s) em "
+                    f"{discovered[0].parent}."
+                )
+            manual_chat_path = st.text_input(
+                "Ou informe outro arquivo TXT",
+                placeholder=r"C:\Videos\GMT20260817-115548_RecordingnewChat.txt",
+                key="social_chat_manual_path",
+            )
+            chat_path_value = manual_chat_path.strip() or selected_discovered
+            chat_path = Path(chat_path_value) if chat_path_value else None
+
+            if chat_path is not None:
+                source_signature = str(chat_path.resolve())
+                if st.session_state.get("social_chat_date_source") != source_signature:
+                    st.session_state["social_chat_date_source"] = source_signature
+                    st.session_state["social_feedback_date"] = infer_chat_date(chat_path)
+                    st.session_state.pop("social_feedback_analysis", None)
+                    st.session_state.pop("social_feedback_generated", None)
+                    st.session_state.pop("social_feedback_video", None)
+            st.session_state.setdefault("social_feedback_date", date.today())
+            date_column, clock_column = st.columns(2)
+            feedback_date = date_column.date_input(
+                "Data exibida nas imagens",
+                key="social_feedback_date",
+                format="DD/MM/YYYY",
+            )
+            clock_adjustment = clock_column.number_input(
+                "Ajuste do relógio (min)",
+                min_value=-720.0,
+                max_value=720.0,
+                value=0.0,
+                step=1.0,
+                help=(
+                    "Normalmente pode ficar em zero. Ajuste apenas se o horário reconstruído "
+                    "não coincidir com o horário mostrado pelo Zoom."
+                ),
+            )
+
+            if st.button(
+                "Analisar chat deste dia",
+                key="analyze_social_chat",
+                type="primary",
+                disabled=chat_path is None,
+            ):
+                try:
+                    if chat_path is None or not chat_path.exists():
+                        raise FileNotFoundError(f"Chat do Zoom não encontrado: {chat_path}")
+                    candidates = analyze_zoom_chat(
+                        chat_path,
+                        current_config,
+                        clock_adjustment_minutes=clock_adjustment,
+                    )
+                    st.session_state["social_feedback_analysis"] = {
+                        "source": str(chat_path.resolve()),
+                        "candidates": candidates,
+                    }
+                    st.session_state["social_feedback_editor_generation"] = (
+                        st.session_state.get("social_feedback_editor_generation", 0) + 1
+                    )
+                    st.session_state.pop("social_feedback_generated", None)
+                    st.session_state.pop("social_feedback_video", None)
+                except Exception as error:
+                    st.error(str(error))
+
+            analysis = st.session_state.get("social_feedback_analysis")
+            if not analysis:
+                st.info(
+                    "Selecione o TXT e analise para revisar os depoimentos. Nenhuma API ou IA é usada."
+                )
+            elif chat_path is None or analysis.get("source") != str(chat_path.resolve()):
+                st.warning("O arquivo selecionado mudou. Analise novamente antes de gerar as imagens.")
+            else:
+                candidates: list[FeedbackCandidate] = analysis["candidates"]
+                strong_count = sum(item.classification == "Forte" for item in candidates)
+                possible_count = len(candidates) - strong_count
+                st.markdown(
+                    f"**{len(candidates)} candidatos:** {strong_count} fortes · "
+                    f"{possible_count} possíveis"
+                )
+                if not candidates:
+                    st.warning(
+                        "Nenhum candidato atingiu a pontuação mínima. Revise as palavras e os limites."
+                    )
+                else:
+                    review_records = [
+                        {
+                            "Usar": item.classification == "Forte",
+                            "Ordem": index,
+                            "Horário": item.wall_time.strftime("%H:%M"),
+                            "Nome na arte": item.display_name,
+                            "Autor completo": item.author,
+                            "Classificação": item.classification,
+                            "Pontos": item.score,
+                            "Depoimento": item.text,
+                            "Encontrado por": " · ".join(item.reasons),
+                            "ID": item.id,
+                        }
+                        for index, item in enumerate(candidates, 1)
+                    ]
+                    generation = st.session_state.get(
+                        "social_feedback_editor_generation", 0
+                    )
+                    reviewed_df = st.data_editor(
+                        pd.DataFrame(review_records),
+                        hide_index=True,
+                        width="stretch",
+                        column_config={
+                            "Usar": st.column_config.CheckboxColumn(required=True),
+                            "Ordem": st.column_config.NumberColumn(
+                                min_value=1, step=1, required=True
+                            ),
+                            "Pontos": st.column_config.NumberColumn(format="%.1f"),
+                            "Depoimento": st.column_config.TextColumn(width="large"),
+                            "Encontrado por": st.column_config.TextColumn(width="large"),
+                            "ID": None,
+                        },
+                        disabled=[
+                            "Horário",
+                            "Nome na arte",
+                            "Autor completo",
+                            "Classificação",
+                            "Pontos",
+                            "Depoimento",
+                            "Encontrado por",
+                            "ID",
+                        ],
+                        key=f"social_feedback_review_{generation}",
+                    )
+                    by_id = {item.id: item for item in candidates}
+                    selected_rows: list[tuple[int, FeedbackCandidate]] = []
+                    for record in reviewed_df.to_dict("records"):
+                        if not bool(record.get("Usar", False)):
+                            continue
+                        candidate = by_id.get(str(record.get("ID", "")))
+                        if candidate is None:
+                            continue
+                        try:
+                            order = int(record.get("Ordem", 9999))
+                        except (TypeError, ValueError):
+                            order = 9999
+                        selected_rows.append((order, candidate))
+                    selected_rows.sort(key=lambda item: (item[0], item[1].start))
+                    selected = [item[1] for item in selected_rows]
+
+                    st.markdown("**Distribuição dos painéis**")
+                    pagination_mode = st.radio(
+                        "Como dividir os comentários",
+                        options=["Automática", "Manual"],
+                        horizontal=True,
+                        key=f"social_pagination_mode_{generation}",
+                    )
+                    automatic_pages = plan_feedback_pages(selected) if selected else []
+                    automatic_sizes = [len(page) for page in automatic_pages]
+                    if automatic_sizes:
+                        st.caption(
+                            "Distribuição automática otimizada (pode mover comentários "
+                            "entre páginas para preencher melhor): "
+                            + ", ".join(
+                                f"página {index}: {size}"
+                                for index, size in enumerate(automatic_sizes, 1)
+                            )
+                            + "."
+                        )
+                    page_sizes: list[int] | None = None
+                    pagination_error = ""
+                    if pagination_mode == "Manual":
+                        distribution_value = st.text_input(
+                            "Comentários por página",
+                            placeholder=(
+                                ", ".join(str(size) for size in automatic_sizes)
+                                or "Ex.: 6, 4, 5"
+                            ),
+                            help=(
+                                "Os números consomem os depoimentos na ordem da tabela. "
+                                "Exemplo: 6, 4 cria uma página com seis e outra com quatro."
+                            ),
+                            key=f"social_manual_distribution_{generation}",
+                        )
+                        try:
+                            page_sizes = _parse_social_page_sizes(
+                                distribution_value, len(selected)
+                            )
+                        except ValueError as error:
+                            pagination_error = str(error)
+                            if distribution_value.strip():
+                                st.warning(pagination_error)
+
+                    planned_pages: list[list[FeedbackCandidate]] = []
+                    occupancies: list[float] = []
+                    if selected and not pagination_error:
+                        try:
+                            planned_pages = plan_feedback_pages(
+                                selected, page_sizes=page_sizes
+                            )
+                            occupancies = [
+                                feedback_page_occupancy(page) for page in planned_pages
+                            ]
+                            st.dataframe(
+                                pd.DataFrame(
+                                    [
+                                        {
+                                            "Página": index,
+                                            "Comentários": len(page),
+                                            "Participantes": ", ".join(
+                                                item.display_name for item in page
+                                            ),
+                                            "Ocupação da área segura": f"{occupancy:.0%}",
+                                            "Situação": (
+                                                "Cabe na área segura"
+                                                if occupancy <= 1.0
+                                                else "Ultrapassa a área segura"
+                                            ),
+                                        }
+                                        for index, (page, occupancy) in enumerate(
+                                            zip(planned_pages, occupancies), 1
+                                        )
+                                    ]
+                                ),
+                                hide_index=True,
+                                width="stretch",
+                            )
+                            if any(value > 1.0 for value in occupancies):
+                                pagination_error = (
+                                    "Uma ou mais páginas ultrapassam a área segura. "
+                                    "Reduza a quantidade ou altere a ordem dos depoimentos."
+                                )
+                                st.error(pagination_error)
+                        except ValueError as error:
+                            pagination_error = str(error)
+                            st.error(pagination_error)
+
+                    show_safe_guides = st.checkbox(
+                        "Mostrar zonas mortas na prévia",
+                        value=True,
+                        key=f"social_safe_guides_{generation}",
+                        help="As faixas vermelhas servem apenas para conferência e não entram no PNG baixado.",
+                    )
+
+                    with st.container(border=True):
+                        context_id = st.selectbox(
+                            "Conferir contexto de um candidato",
+                            options=[item.id for item in candidates],
+                            format_func=lambda item_id: (
+                                f"{by_id[item_id].wall_time:%H:%M} · "
+                                f"{by_id[item_id].author}: {by_id[item_id].text[:90]}"
+                            ),
+                            key=f"social_feedback_context_{generation}",
+                        )
+                        context_candidate = by_id[context_id]
+                        st.markdown(f"**Mensagem selecionada:** {context_candidate.text}")
+                        if context_candidate.context:
+                            st.code("\n".join(context_candidate.context), language=None)
+                        else:
+                            st.caption("Não há outras mensagens nos 45 segundos ao redor.")
+
+                    approved_json = approved_feedbacks_json(
+                        selected,
+                        feedback_date,
+                        source_chat=chat_path,
+                    )
+                    generate_column, json_column, save_column = st.columns(3)
+                    if generate_column.button(
+                        "Gerar imagens aprovadas",
+                        key="generate_social_images",
+                        type="primary",
+                        width="stretch",
+                        disabled=(
+                            not selected
+                            or bool(pagination_error)
+                            or not output_dir.strip()
+                        ),
+                    ):
+                        try:
+                            panels = render_feedback_panels(
+                                selected,
+                                feedback_date,
+                                page_sizes=page_sizes,
+                            )
+                            individuals = [
+                                (item, render_individual_feedback(item, feedback_date))
+                                for item in selected
+                            ]
+                            saved_files = _save_social_proof_outputs(
+                                output_dir,
+                                panels,
+                                individuals,
+                                approved_json,
+                                feedback_date,
+                            )
+                            st.session_state["social_feedback_generated"] = {
+                                "signature": (
+                                    tuple(item.id for item in selected),
+                                    feedback_date.isoformat(),
+                                    pagination_mode,
+                                    tuple(page_sizes or ()),
+                                ),
+                                "panels": panels,
+                                "individuals": individuals,
+                                "occupancies": occupancies,
+                                "saved_files": saved_files,
+                            }
+                            st.success(
+                                f"Imagens, JSON e ZIP salvos em {saved_files['directory']}."
+                            )
+                        except Exception as error:
+                            st.error(str(error))
+                    json_column.download_button(
+                        "Baixar seleção JSON",
+                        data=approved_json,
+                        file_name=(
+                            f"{feedback_date.isoformat()}_feedbacks-aprovados.json"
+                        ),
+                        mime="application/json",
+                        width="stretch",
+                        disabled=not selected,
+                    )
+                    if save_column.button(
+                        "Salvar JSON na saída",
+                        key="save_social_selection",
+                        width="stretch",
+                        disabled=not selected or not output_dir.strip(),
+                    ):
+                        try:
+                            target = Path(output_dir) / (
+                                f"{feedback_date.isoformat()}_feedbacks-aprovados.json"
+                            )
+                            target.parent.mkdir(parents=True, exist_ok=True)
+                            target.write_bytes(approved_json)
+                            st.success(f"Seleção salva em {target}.")
+                        except Exception as error:
+                            st.error(str(error))
+
+                    with st.expander("Vídeo animado da prova social", expanded=False):
+                        st.caption(
+                            "Gera uma cena vertical independente. Os comentários entram em "
+                            "sequência e o arquivo não é adicionado ao vídeo final automaticamente."
+                        )
+                        timing_column, page_pause_column, final_hold_column = st.columns(3)
+                        comment_interval = timing_column.number_input(
+                            "Intervalo entre comentários (s)",
+                            min_value=0.3,
+                            max_value=10.0,
+                            value=1.2,
+                            step=0.1,
+                            key=f"social_video_interval_{generation}",
+                            help="Tempo entre o início da entrada de um comentário e o próximo.",
+                        )
+                        page_pause = page_pause_column.number_input(
+                            "Pausa entre páginas (s)",
+                            min_value=0.1,
+                            max_value=10.0,
+                            value=1.0,
+                            step=0.1,
+                            key=f"social_video_page_pause_{generation}",
+                        )
+                        final_hold = final_hold_column.number_input(
+                            "Leitura ao final (s)",
+                            min_value=0.1,
+                            max_value=15.0,
+                            value=2.0,
+                            step=0.1,
+                            key=f"social_video_final_hold_{generation}",
+                        )
+                        sound_column, volume_column = st.columns([1, 2])
+                        notification_sound = sound_column.checkbox(
+                            "Som de notificação",
+                            value=True,
+                            key=f"social_video_sound_{generation}",
+                        )
+                        notification_volume_percent = volume_column.slider(
+                            "Volume da notificação",
+                            min_value=0,
+                            max_value=100,
+                            value=25,
+                            step=5,
+                            disabled=not notification_sound,
+                            key=f"social_video_volume_{generation}",
+                        )
+                        video_timing_error = ""
+                        estimated_duration = 0.0
+                        try:
+                            estimated_duration = estimate_feedback_video_duration(
+                                selected,
+                                page_sizes=page_sizes,
+                                comment_interval=float(comment_interval),
+                                page_pause=float(page_pause),
+                                final_hold=float(final_hold),
+                            )
+                        except ValueError as error:
+                            video_timing_error = str(error)
+                            if selected:
+                                st.warning(video_timing_error)
+                        video_target = (
+                            Path(output_dir)
+                            / f"{feedback_date.isoformat()}_prova-social.mp4"
+                        )
+                        if estimated_duration:
+                            st.caption(
+                                f"Duração estimada: {estimated_duration:.1f} s · "
+                                f"Saída: {video_target}"
+                            )
+                        st.caption(
+                            "A entrada usa um fade rápido de 0,2 s. O pop é sintetizado "
+                            "localmente pelo FFmpeg, sem serviço externo."
+                        )
+                        video_signature = (
+                            tuple(item.id for item in selected),
+                            feedback_date.isoformat(),
+                            pagination_mode,
+                            tuple(page_sizes or ()),
+                            float(comment_interval),
+                            float(page_pause),
+                            float(final_hold),
+                            bool(notification_sound),
+                            int(notification_volume_percent),
+                            str(video_target.resolve()),
+                        )
+                        if st.button(
+                            "Gerar vídeo de prova social",
+                            key="generate_social_video",
+                            type="primary",
+                            width="stretch",
+                            disabled=(
+                                not selected
+                                or bool(pagination_error)
+                                or bool(video_timing_error)
+                                or not output_dir.strip()
+                            ),
+                        ):
+                            try:
+                                with st.spinner("Gerando vídeo animado de prova social..."):
+                                    result = render_feedback_video(
+                                        selected,
+                                        feedback_date,
+                                        video_target,
+                                        page_sizes=page_sizes,
+                                        comment_interval=float(comment_interval),
+                                        page_pause=float(page_pause),
+                                        final_hold=float(final_hold),
+                                        notification_sound=notification_sound,
+                                        notification_volume=(
+                                            notification_volume_percent / 100.0
+                                        ),
+                                        ffmpeg_path=ffmpeg_path,
+                                    )
+                                    video_json_path = result.path.with_name(
+                                        f"{feedback_date.isoformat()}_feedbacks-aprovados.json"
+                                    )
+                                    video_json_path.write_bytes(approved_json)
+                                st.session_state["social_feedback_video"] = {
+                                    "signature": video_signature,
+                                    "path": str(result.path.resolve()),
+                                    "duration": result.duration,
+                                    "comments": result.comment_count,
+                                    "pages": result.page_count,
+                                }
+                                st.success(f"Vídeo salvo em {result.path}.")
+                            except Exception as error:
+                                st.error(str(error))
+
+                        generated_video = st.session_state.get("social_feedback_video")
+                        if generated_video:
+                            generated_video_path = Path(generated_video["path"])
+                            if generated_video.get("signature") != video_signature:
+                                st.info(
+                                    "A seleção ou a configuração mudou. Gere novamente para "
+                                    "atualizar o vídeo."
+                                )
+                            elif generated_video_path.exists():
+                                st.markdown(
+                                    f"**Cena pronta:** {generated_video['comments']} comentário(s) · "
+                                    f"{generated_video['pages']} página(s) · "
+                                    f"{generated_video['duration']:.1f} s"
+                                )
+                                video_bytes = generated_video_path.read_bytes()
+                                st.video(video_bytes, format="video/mp4")
+                                st.download_button(
+                                    "Baixar vídeo de prova social",
+                                    data=video_bytes,
+                                    file_name=generated_video_path.name,
+                                    mime="video/mp4",
+                                    width="stretch",
+                                )
+                            else:
+                                st.warning(
+                                    "O último vídeo gerado não está mais na pasta de saída."
+                                )
+
+                    generated = st.session_state.get("social_feedback_generated")
+                    current_signature = (
+                        tuple(item.id for item in selected),
+                        feedback_date.isoformat(),
+                        pagination_mode,
+                        tuple(page_sizes or ()),
+                    )
+                    if generated and generated.get("signature") != current_signature:
+                        st.info("A seleção ou a data mudou. Gere novamente para atualizar as artes.")
+                    elif generated:
+                        panels = generated["panels"]
+                        individuals = generated["individuals"]
+                        generated_occupancies = generated.get("occupancies", [])
+                        st.markdown(f"#### Painéis do dia · {len(panels)} imagem(ns)")
+                        panel_columns = st.columns(2)
+                        for index, content in enumerate(panels, 1):
+                            with panel_columns[(index - 1) % 2]:
+                                preview_content = (
+                                    render_safe_area_preview(content)
+                                    if show_safe_guides
+                                    else content
+                                )
+                                occupancy_label = (
+                                    f" · {generated_occupancies[index - 1]:.0%} da área segura"
+                                    if index - 1 < len(generated_occupancies)
+                                    else ""
+                                )
+                                st.image(
+                                    preview_content,
+                                    caption=(
+                                        f"Painel {index}/{len(panels)}{occupancy_label}"
+                                    ),
+                                )
+                                st.download_button(
+                                    f"Baixar painel {index}",
+                                    data=content,
+                                    file_name=(
+                                        f"{feedback_date.isoformat()}_"
+                                        f"depoimentos-painel-{index:02d}.png"
+                                    ),
+                                    mime="image/png",
+                                    width="stretch",
+                                    key=f"download_social_panel_{index}_{generation}",
+                                )
+
+                        with st.expander("Depoimentos individuais"):
+                            individual_by_id = {
+                                candidate.id: (candidate, content)
+                                for candidate, content in individuals
+                            }
+                            individual_id = st.selectbox(
+                                "Escolha um depoimento",
+                                options=list(individual_by_id),
+                                format_func=lambda item_id: (
+                                    f"{individual_by_id[item_id][0].display_name} · "
+                                    f"{individual_by_id[item_id][0].text[:90]}"
+                                ),
+                                key=f"social_individual_choice_{generation}",
+                            )
+                            individual, content = individual_by_id[individual_id]
+                            preview_column, download_column = st.columns([1, 1])
+                            preview_column.image(content)
+                            download_column.download_button(
+                                "Baixar depoimento individual",
+                                data=content,
+                                file_name=(
+                                    f"{feedback_date.isoformat()}_depoimento-"
+                                    f"{individual.display_name.casefold()}.png"
+                                ),
+                                mime="image/png",
+                                width="stretch",
+                            )
+
+                        archive = _social_proof_zip(
+                            panels,
+                            individuals,
+                            approved_json,
+                            feedback_date,
+                        )
+                        st.download_button(
+                            "Baixar todas as imagens em ZIP",
+                            data=archive,
+                            file_name=f"{feedback_date.isoformat()}_prova-social.zip",
+                            mime="application/zip",
+                            width="stretch",
+                            type="primary",
+                        )
+
+        with settings_tab:
+            st.caption(
+                "Autores internos são excluídos somente pelo nome completo normalizado. "
+                "Apelidos servem apenas para reconhecer menções dentro dos depoimentos."
+            )
+            settings_generation = st.session_state.get("social_settings_generation", 0)
+            st.markdown("**Professores e equipe**")
+            staff_df = st.data_editor(
+                pd.DataFrame(staff_records(current_config.staff)),
+                hide_index=True,
+                width="stretch",
+                num_rows="dynamic",
+                column_config={
+                    "Ativo": st.column_config.CheckboxColumn(required=True),
+                    "Nome completo no Zoom": st.column_config.TextColumn(
+                        required=True, width="large"
+                    ),
+                    "Apelidos nas mensagens": st.column_config.TextColumn(width="large"),
+                    "ID": None,
+                },
+                disabled=["ID"],
+                key=f"social_staff_editor_{settings_generation}",
+            )
+            st.markdown("**Palavras e frases de avaliação**")
+            feedback_rules_df = st.data_editor(
+                pd.DataFrame(feedback_rule_records(current_config.rules)),
+                hide_index=True,
+                width="stretch",
+                num_rows="dynamic",
+                column_config={
+                    "Ativa": st.column_config.CheckboxColumn(required=True),
+                    "Tipo": st.column_config.SelectboxColumn(
+                        options=list(RULE_KIND_LABELS.values()), required=True
+                    ),
+                    "Palavra ou frase": st.column_config.TextColumn(
+                        required=True, width="large"
+                    ),
+                    "Pontos": st.column_config.NumberColumn(
+                        min_value=-20.0, max_value=20.0, step=1.0, format="%.1f"
+                    ),
+                    "ID": None,
+                },
+                disabled=["ID"],
+                key=f"social_rules_editor_{settings_generation}",
+            )
+            first, second, third = st.columns(3)
+            group_seconds = first.number_input(
+                "Agrupar mensagens por (s)",
+                min_value=0.0,
+                max_value=300.0,
+                value=float(current_config.group_seconds),
+                step=5.0,
+                key=f"social_group_seconds_{settings_generation}",
+            )
+            possible_threshold = second.number_input(
+                "Pontuação possível",
+                min_value=-20.0,
+                max_value=50.0,
+                value=float(current_config.possible_threshold),
+                step=1.0,
+                key=f"social_possible_threshold_{settings_generation}",
+            )
+            strong_threshold = third.number_input(
+                "Pontuação forte",
+                min_value=-20.0,
+                max_value=50.0,
+                value=float(current_config.strong_threshold),
+                step=1.0,
+                key=f"social_strong_threshold_{settings_generation}",
+            )
+            bonus_first, bonus_second = st.columns(2)
+            teacher_bonus = bonus_first.number_input(
+                "Bônus por mencionar professor",
+                min_value=0.0,
+                max_value=20.0,
+                value=float(current_config.teacher_mention_bonus),
+                step=1.0,
+                key=f"social_teacher_bonus_{settings_generation}",
+            )
+            reaction_bonus = bonus_second.number_input(
+                "Bônus por reação",
+                min_value=0.0,
+                max_value=10.0,
+                value=float(current_config.reaction_bonus),
+                step=0.5,
+                key=f"social_reaction_bonus_{settings_generation}",
+            )
+            save_settings_column, restore_settings_column = st.columns(2)
+            if save_settings_column.button(
+                "Salvar professores e palavras",
+                key="save_social_settings",
+                type="primary",
+                width="stretch",
+            ):
+                try:
+                    updated = SocialProofConfig(
+                        staff=staff_from_records(staff_df.to_dict("records")),
+                        rules=feedback_rules_from_records(
+                            feedback_rules_df.to_dict("records")
+                        ),
+                        group_seconds=float(group_seconds),
+                        possible_threshold=float(possible_threshold),
+                        strong_threshold=float(strong_threshold),
+                        teacher_mention_bonus=float(teacher_bonus),
+                        reaction_bonus=float(reaction_bonus),
+                    )
+                    validate_social_proof_config(updated)
+                    target = save_social_proof_config(updated, SOCIAL_PROOF_CONFIG_PATH)
+                    st.success(f"Configuração salva em {target}.")
+                except Exception as error:
+                    st.error(str(error))
+            if restore_settings_column.button(
+                "Restaurar padrões",
+                key="restore_social_settings",
+                width="stretch",
+            ):
+                save_social_proof_config(
+                    default_social_proof_config(), SOCIAL_PROOF_CONFIG_PATH
+                )
+                st.session_state["social_settings_generation"] = settings_generation + 1
+                st.rerun()
 
 
 def _scene_signature(
@@ -1547,6 +2388,13 @@ with st.sidebar:
         value=default_ffmpeg_path(),
         help="O FFmpeg instalado pelo WinGet já é preenchido como padrão deste projeto.",
     )
+    output_dir = st.text_input(
+        "Pasta de saída",
+        value=str(Path("output").resolve()),
+        help=(
+            "Usada tanto pelos vídeos independentes de prova social quanto pelo vídeo final."
+        ),
+    )
     project_widget_generation = st.session_state.get("project_widget_generation", 0)
     target_speaker_key = f"target_speaker_input_{project_widget_generation}"
     st.session_state.setdefault(target_speaker_key, "RAFAEL FOSSALUSSA")
@@ -1794,6 +2642,13 @@ with st.expander("Palavras de 1x e efeitos", expanded=False):
                 st.success(f"{len(edited_keyword_rules)} palavras e frases salvas em {target}.")
         except Exception as error:
             st.error(str(error))
+
+
+render_social_proof_section(
+    video_path,
+    output_dir=output_dir,
+    ffmpeg_path=ffmpeg_path,
+)
 
 
 added_message = st.session_state.pop("manual_cut_added_message", "")
@@ -2237,7 +3092,6 @@ if operations:
             st.caption("Capture uma imagem para conferir e ajustar as áreas sobre o vídeo real.")
 
     st.session_state["operations"] = operations
-    output_dir = st.text_input("Pasta de saída", value=str(Path("output").resolve()))
     professor_sync_offset = 0.0
     audio_source = "professor"
     st.markdown("### 3. Monte as cenas e o vídeo final")
