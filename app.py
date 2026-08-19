@@ -45,6 +45,11 @@ from trade_cutter.models import (
     Operation,
     Scene,
 )
+from trade_cutter.polls import (
+    discover_zoom_poll_files,
+    parse_zoom_poll_csv,
+    render_poll_card,
+)
 from trade_cutter.project import (
     copy_source_transcript,
     create_project_directory,
@@ -83,6 +88,7 @@ from trade_cutter.social_proof import (
     feedback_rules_from_records,
     infer_chat_date,
     load_social_proof_config,
+    messages_in_clock_interval,
     plan_feedback_pages,
     render_feedback_panels,
     render_feedback_video,
@@ -329,6 +335,123 @@ def _parse_social_page_sizes(value: str, expected_total: int) -> list[int]:
     return sizes
 
 
+def _render_zoom_poll_tab(
+    video_path: str,
+    *,
+    output_dir: str,
+) -> None:
+    poll_files = discover_zoom_poll_files(video_path)
+    if not poll_files:
+        st.info(
+            "⬜ Arquivo de enquete não encontrado na pasta da gravação. "
+            "Este documento é opcional e as outras ferramentas continuam funcionando normalmente."
+        )
+        return
+
+    st.success(
+        f"✅ Enquete encontrada na pasta da gravação: {poll_files[0].name}"
+        if len(poll_files) == 1
+        else f"✅ {len(poll_files)} arquivos de enquete encontrados na pasta da gravação."
+    )
+    selected_poll_path = Path(
+        st.selectbox(
+            "Arquivo de enquete",
+            options=[str(path) for path in poll_files],
+            format_func=lambda value: Path(value).name,
+            key="social_poll_file",
+        )
+    )
+    try:
+        polls = parse_zoom_poll_csv(selected_poll_path)
+    except Exception as error:
+        st.error(str(error))
+        return
+    if not polls:
+        st.warning("O CSV foi encontrado, mas não possui resultados de enquete reconhecíveis.")
+        return
+
+    poll_index = st.selectbox(
+        "Resultado para gerar",
+        options=list(range(len(polls))),
+        format_func=lambda index: (
+            f"{polls[index].polling_name or 'Enquete'} · {polls[index].question}"
+        ),
+        key="social_poll_result",
+    )
+    poll = polls[poll_index]
+    st.caption(
+        f"Data da arte: {poll.poll_date:%d/%m/%Y} · "
+        "O CSV informa percentuais, mas não a quantidade absoluta de participantes."
+    )
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "Resposta": answer.label,
+                    "Resultado": (
+                        f"{int(answer.percentage)}%"
+                        if answer.percentage.is_integer()
+                        else f"{answer.percentage:.1f}%".replace(".", ",")
+                    ),
+                }
+                for answer in poll.answers
+            ]
+        ),
+        hide_index=True,
+        width="stretch",
+    )
+    show_guides = st.checkbox(
+        "Mostrar zonas mortas na prévia da enquete",
+        value=True,
+        key="social_poll_safe_guides",
+        help="As marcações aparecem somente na conferência e não entram no PNG salvo.",
+    )
+    file_suffix = f"-{poll_index + 1:02d}" if len(polls) > 1 else ""
+    target = Path(output_dir) / (
+        f"{poll.poll_date.isoformat()}_enquete-do-dia{file_suffix}.png"
+    )
+    signature = (
+        str(selected_poll_path.resolve()),
+        selected_poll_path.stat().st_mtime_ns,
+        poll_index,
+        str(target.resolve()),
+    )
+    if st.button(
+        "Gerar imagem da enquete",
+        key="generate_social_poll_image",
+        type="primary",
+        width="stretch",
+        disabled=not output_dir.strip(),
+    ):
+        try:
+            content = render_poll_card(poll)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+            st.session_state["social_poll_generated"] = {
+                "signature": signature,
+                "content": content,
+                "path": str(target.resolve()),
+            }
+            st.success(f"Imagem da enquete salva em {target}.")
+        except Exception as error:
+            st.error(str(error))
+
+    generated = st.session_state.get("social_poll_generated")
+    if generated and generated.get("signature") != signature:
+        st.info("O arquivo ou o resultado selecionado mudou. Gere novamente para atualizar a arte.")
+    elif generated:
+        content = generated["content"]
+        preview = render_safe_area_preview(content) if show_guides else content
+        st.image(preview, caption="Prévia da enquete do dia")
+        st.download_button(
+            "Baixar imagem da enquete",
+            data=content,
+            file_name=Path(generated["path"]).name,
+            mime="image/png",
+            width="stretch",
+        )
+
+
 def render_social_proof_section(
     video_path: str,
     *,
@@ -347,7 +470,9 @@ def render_social_proof_section(
             "Esta área é independente dos cortes. A análise acontece localmente, mostra "
             "por que cada mensagem foi encontrada e só gera artes após sua aprovação."
         )
-        analysis_tab, settings_tab = st.tabs(["Analisar e gerar", "Professores e palavras"])
+        analysis_tab, poll_tab, settings_tab = st.tabs(
+            ["Comentários", "Enquete do dia", "Professores e palavras"]
+        )
 
         with analysis_tab:
             discovered = discover_zoom_chat_files(video_path)
@@ -398,8 +523,47 @@ def render_social_proof_section(
                 ),
             )
 
+            analysis_mode_label = st.radio(
+                "Como localizar os comentários",
+                options=[
+                    "Depoimentos por palavras",
+                    "Todas as mensagens por horário",
+                ],
+                horizontal=True,
+                key="social_analysis_mode",
+            )
+            analysis_mode = (
+                "interval"
+                if analysis_mode_label == "Todas as mensagens por horário"
+                else "keywords"
+            )
+            interval_start_text = ""
+            interval_end_text = ""
+            if analysis_mode == "interval":
+                interval_start_column, interval_end_column = st.columns(2)
+                interval_start_text = interval_start_column.text_input(
+                    "Horário inicial",
+                    placeholder="10:12:00",
+                    key="social_interval_start",
+                    help="Horário do relógio reconstruído do chat, no formato HH:MM:SS.",
+                )
+                interval_end_text = interval_end_column.text_input(
+                    "Horário final",
+                    placeholder="10:14:00",
+                    key="social_interval_end",
+                    help="As mensagens exatamente neste segundo também serão incluídas.",
+                )
+                st.caption(
+                    "Este modo mostra todas as mensagens de alunos no período, mesmo sem "
+                    "palavras positivas. Não depende da sincronização com o vídeo."
+                )
+
             if st.button(
-                "Analisar chat deste dia",
+                (
+                    "Buscar mensagens deste intervalo"
+                    if analysis_mode == "interval"
+                    else "Analisar chat deste dia"
+                ),
                 key="analyze_social_chat",
                 type="primary",
                 disabled=chat_path is None,
@@ -407,15 +571,36 @@ def render_social_proof_section(
                 try:
                     if chat_path is None or not chat_path.exists():
                         raise FileNotFoundError(f"Chat do Zoom não encontrado: {chat_path}")
-                    candidates = analyze_zoom_chat(
-                        chat_path,
-                        current_config,
-                        clock_adjustment_minutes=clock_adjustment,
-                    )
+                    interval_values: tuple[float, float] | None = None
+                    if analysis_mode == "interval":
+                        interval_start = parse_clock_time(interval_start_text)
+                        interval_end = parse_clock_time(interval_end_text)
+                        if interval_start is None or interval_end is None:
+                            raise ValueError(
+                                "Informe o horário inicial e final no formato HH:MM:SS."
+                            )
+                        candidates = messages_in_clock_interval(
+                            chat_path,
+                            current_config,
+                            interval_start,
+                            interval_end,
+                            clock_adjustment_minutes=clock_adjustment,
+                        )
+                        interval_values = (interval_start, interval_end)
+                    else:
+                        candidates = analyze_zoom_chat(
+                            chat_path,
+                            current_config,
+                            clock_adjustment_minutes=clock_adjustment,
+                        )
                     st.session_state["social_feedback_analysis"] = {
                         "source": str(chat_path.resolve()),
                         "candidates": candidates,
+                        "mode": analysis_mode,
+                        "interval": interval_values,
+                        "clock_adjustment": float(clock_adjustment),
                     }
+                    st.session_state["social_feedback_selection_default"] = "smart"
                     st.session_state["social_feedback_editor_generation"] = (
                         st.session_state.get("social_feedback_editor_generation", 0) + 1
                     )
@@ -425,30 +610,105 @@ def render_social_proof_section(
                     st.error(str(error))
 
             analysis = st.session_state.get("social_feedback_analysis")
+            interval_matches_analysis = True
+            if analysis_mode == "interval" and analysis:
+                try:
+                    current_interval = (
+                        parse_clock_time(interval_start_text),
+                        parse_clock_time(interval_end_text),
+                    )
+                    interval_matches_analysis = (
+                        None not in current_interval
+                        and tuple(analysis.get("interval") or ()) == current_interval
+                    )
+                except ValueError:
+                    interval_matches_analysis = False
             if not analysis:
                 st.info(
-                    "Selecione o TXT e analise para revisar os depoimentos. Nenhuma API ou IA é usada."
+                    "Selecione o TXT e faça a busca para revisar os comentários. Nenhuma API ou IA é usada."
                 )
-            elif chat_path is None or analysis.get("source") != str(chat_path.resolve()):
-                st.warning("O arquivo selecionado mudou. Analise novamente antes de gerar as imagens.")
+            elif (
+                chat_path is None
+                or analysis.get("source") != str(chat_path.resolve())
+                or analysis.get("mode", "keywords") != analysis_mode
+                or not interval_matches_analysis
+                or float(analysis.get("clock_adjustment", 0.0))
+                != float(clock_adjustment)
+            ):
+                st.warning(
+                    "O arquivo ou os parâmetros da busca mudaram. Analise novamente antes de gerar as imagens."
+                )
             else:
                 candidates: list[FeedbackCandidate] = analysis["candidates"]
                 strong_count = sum(item.classification == "Forte" for item in candidates)
-                possible_count = len(candidates) - strong_count
-                st.markdown(
-                    f"**{len(candidates)} candidatos:** {strong_count} fortes · "
-                    f"{possible_count} possíveis"
+                possible_count = sum(
+                    item.classification == "Possível" for item in candidates
                 )
-                if not candidates:
-                    st.warning(
-                        "Nenhum candidato atingiu a pontuação mínima. Revise as palavras e os limites."
+                neutral_count = len(candidates) - strong_count - possible_count
+                if analysis_mode == "interval":
+                    interval_values = analysis.get("interval") or (0.0, 0.0)
+                    st.markdown(
+                        f"**{len(candidates)} mensagens entre "
+                        f"{format_timecode(interval_values[0])} e "
+                        f"{format_timecode(interval_values[1])}:** "
+                        f"{strong_count} fortes · {possible_count} possíveis · "
+                        f"{neutral_count} sem destaque"
                     )
                 else:
+                    st.markdown(
+                        f"**{len(candidates)} candidatos:** {strong_count} fortes · "
+                        f"{possible_count} possíveis"
+                    )
+                if not candidates:
+                    if analysis_mode == "interval":
+                        st.warning(
+                            "Nenhuma mensagem de aluno foi encontrada nesse intervalo."
+                        )
+                    else:
+                        st.warning(
+                            "Nenhum candidato atingiu a pontuação mínima. Revise as palavras e os limites."
+                        )
+                else:
+                    generation = st.session_state.get(
+                        "social_feedback_editor_generation", 0
+                    )
+                    select_all_column, clear_selection_column, selection_hint_column = (
+                        st.columns([1, 1, 2])
+                    )
+                    if select_all_column.button(
+                        "Selecionar todas",
+                        key=f"social_select_all_{generation}",
+                        width="stretch",
+                    ):
+                        st.session_state["social_feedback_selection_default"] = "all"
+                        st.session_state["social_feedback_editor_generation"] = generation + 1
+                        st.rerun()
+                    if clear_selection_column.button(
+                        "Limpar seleção",
+                        key=f"social_clear_selection_{generation}",
+                        width="stretch",
+                    ):
+                        st.session_state["social_feedback_selection_default"] = "none"
+                        st.session_state["social_feedback_editor_generation"] = generation + 1
+                        st.rerun()
+                    selection_hint_column.caption(
+                        "Mensagens fortes começam marcadas; as demais ficam disponíveis "
+                        "para sua confirmação manual."
+                    )
+                    selection_default = st.session_state.get(
+                        "social_feedback_selection_default", "smart"
+                    )
                     review_records = [
                         {
-                            "Usar": item.classification == "Forte",
+                            "Usar": (
+                                True
+                                if selection_default == "all"
+                                else False
+                                if selection_default == "none"
+                                else item.classification == "Forte"
+                            ),
                             "Ordem": index,
-                            "Horário": item.wall_time.strftime("%H:%M"),
+                            "Horário": item.wall_time.strftime("%H:%M:%S"),
                             "Nome na arte": item.display_name,
                             "Autor completo": item.author,
                             "Classificação": item.classification,
@@ -459,9 +719,6 @@ def render_social_proof_section(
                         }
                         for index, item in enumerate(candidates, 1)
                     ]
-                    generation = st.session_state.get(
-                        "social_feedback_editor_generation", 0
-                    )
                     reviewed_df = st.data_editor(
                         pd.DataFrame(review_records),
                         hide_index=True,
@@ -600,10 +857,10 @@ def render_social_proof_section(
 
                     with st.container(border=True):
                         context_id = st.selectbox(
-                            "Conferir contexto de um candidato",
+                            "Conferir contexto de uma mensagem",
                             options=[item.id for item in candidates],
                             format_func=lambda item_id: (
-                                f"{by_id[item_id].wall_time:%H:%M} · "
+                                f"{by_id[item_id].wall_time:%H:%M:%S} · "
                                 f"{by_id[item_id].author}: {by_id[item_id].text[:90]}"
                             ),
                             key=f"social_feedback_context_{generation}",
@@ -935,6 +1192,9 @@ def render_social_proof_section(
                             width="stretch",
                             type="primary",
                         )
+
+        with poll_tab:
+            _render_zoom_poll_tab(video_path, output_dir=output_dir)
 
         with settings_tab:
             st.caption(

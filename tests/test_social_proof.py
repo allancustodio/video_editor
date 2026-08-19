@@ -16,6 +16,7 @@ from trade_cutter.social_proof import (
     feedback_rules_from_records,
     infer_chat_date,
     estimate_feedback_video_duration,
+    messages_in_clock_interval,
     parse_zoom_chat,
     feedback_page_occupancy,
     plan_feedback_pages,
@@ -40,6 +41,13 @@ já recuperando o stop!
 00:06:00\tAluno Três:\tReplying to "Bati a meta"
 
 Excelente dia, valeu!
+"""
+
+INTERVAL_CHAT = """00:01:00\tRafael Fossalussa:\tVamos ao scalp
+00:02:00\tRafael Souza:\tsim chefe
+00:02:05\tPaula Montibeller:\tMeta batida
+00:02:06\tAluno Dois:\tReacted to "Meta batida" with 👏
+00:03:00\tDavid Fabri:\tEncerramos
 """
 
 
@@ -81,6 +89,44 @@ def test_configuration_records_and_persistence() -> None:
         save_social_proof_config(config, target)
         loaded = load_social_proof_config(target)
     assert loaded.to_dict() == config.to_dict()
+
+
+def test_clock_interval_lists_all_student_messages_and_preselects_keywords() -> None:
+    with TemporaryDirectory(dir=Path.cwd()) as temporary:
+        source = Path(temporary) / "GMT20260817-120000_RecordingnewChat.txt"
+        source.write_text(INTERVAL_CHAT, encoding="utf-8")
+        candidates = messages_in_clock_interval(
+            source,
+            default_social_proof_config(),
+            9 * 3600 + 60,
+            9 * 3600 + 65,
+        )
+
+    assert [item.author for item in candidates] == [
+        "Rafael Souza",
+        "Paula Montibeller",
+    ]
+    assert [item.wall_time.strftime("%H:%M:%S") for item in candidates] == [
+        "09:01:00",
+        "09:01:05",
+    ]
+    assert candidates[0].classification == "Sem destaque"
+    assert candidates[1].classification == "Forte"
+    assert "reação" in " ".join(candidates[1].reasons)
+    assert candidates[0].context[0].startswith("09:01:05")
+    assert all(item.author not in {"Rafael Fossalussa", "David Fabri"} for item in candidates)
+
+    try:
+        messages_in_clock_interval(
+            source,
+            default_social_proof_config(),
+            10 * 3600,
+            9 * 3600,
+        )
+    except ValueError as error:
+        assert "final" in str(error)
+    else:
+        raise AssertionError("Um intervalo invertido deveria ser rejeitado.")
 
 
 def test_hybrid_panels_and_individual_are_vertical_pngs() -> None:
@@ -177,6 +223,7 @@ def test_animated_video_uses_cumulative_frames_and_ffmpeg_pop() -> None:
 def main() -> None:
     test_parser_analysis_privacy_and_clock()
     test_configuration_records_and_persistence()
+    test_clock_interval_lists_all_student_messages_and_preselects_keywords()
     test_hybrid_panels_and_individual_are_vertical_pngs()
     test_manual_page_sizes_are_respected_and_validated()
     test_animated_video_uses_cumulative_frames_and_ffmpeg_pop()

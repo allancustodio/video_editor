@@ -171,6 +171,13 @@ o contexto, aprovada, descartada e reordenada. A geração produz:
 - um JSON com a seleção aprovada para reutilização futura;
 - uma cena MP4 vertical independente, com os comentários aparecendo em sequência.
 
+Além da busca por palavras, o modo **Todas as mensagens por horário** aceita um
+intervalo inclusivo em `HH:MM:SS` e lista cada mensagem de aluno daquele período.
+Professores continuam excluídos pelo nome completo. Mensagens fortes começam
+marcadas, mensagens neutras permanecem disponíveis para seleção manual e os
+atalhos permitem selecionar todas ou limpar a seleção. Esse filtro usa o relógio
+reconstruído do próprio chat e não depende da sincronização com o vídeo.
+
 As artes exibem somente o primeiro nome. O nome completo permanece nos dados
 internos para identidade, exclusão e atribuição consistente de cor. A data e o
 horário são reconstruídos a partir do nome GMT do arquivo e podem ser ajustados
@@ -194,6 +201,19 @@ troca de página, o tempo final de leitura, o som e seu volume são configuráve
 O pequeno pop é sintetizado pelo FFmpeg, sem arquivo ou serviço externo. O MP4 é
 salvo na pasta de saída compartilhada, mas não é inserido automaticamente no
 vídeo final.
+
+### Enquete do dia
+
+A aba **Enquete do dia** procura automaticamente um arquivo `*.poll.csv` na
+mesma pasta da gravação. O documento é opcional: quando não existe, a interface
+apenas informa sua ausência e nenhuma outra etapa é bloqueada. Quando encontrado,
+o CSV exportado pelo Zoom é interpretado localmente e a pergunta, a data e os
+percentuais são mostrados para conferência.
+
+O botão **Gerar imagem da enquete** cria um PNG vertical no mesmo estilo preto e
+dourado da capa e do encerramento, destaca a resposta mais votada e mantém toda
+a informação dentro da área segura de Stories e Reels. A arte é salva
+automaticamente na pasta de saída e também pode ser baixada pela interface.
 
 ## Modo sem interface
 

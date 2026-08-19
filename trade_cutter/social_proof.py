@@ -509,24 +509,13 @@ def analyze_zoom_chat(
             continue
         text = "\n".join(item.text.strip() for item in group if item.text.strip())
         normalized_text = _normalize(text)
-        score = 0.0
-        reasons: list[str] = []
-        positive_score = 0.0
-        for rule in config.rules:
-            if not rule.enabled:
-                continue
-            expression = _normalize(rule.expression)
-            if expression and expression in normalized_text:
-                score += rule.score
-                if rule.score > 0:
-                    positive_score += rule.score
-                sign = "+" if rule.score > 0 else ""
-                reasons.append(f'{sign}{rule.score:g} “{rule.expression}”')
+        score, positive_score, reasons = _score_feedback_text(
+            normalized_text,
+            config,
+            teacher_aliases,
+        )
         if positive_score <= 0:
             continue
-        if any(_contains_phrase(normalized_text, alias) for alias in teacher_aliases):
-            score += config.teacher_mention_bonus
-            reasons.append(f"+{config.teacher_mention_bonus:g} menção a professor")
         reaction_count = sum(
             reactions.get(_normalize(item.text), 0)
             for item in group
@@ -543,7 +532,8 @@ def analyze_zoom_chat(
         wall_time = clock_anchor + timedelta(seconds=start - first_elapsed)
         group_indices = {item.index for item in group}
         context = tuple(
-            f"{_elapsed_text(item.elapsed)} · {item.author}: {item.text}"
+            f"{clock_anchor + timedelta(seconds=item.elapsed - first_elapsed):%H:%M:%S}"
+            f" · {item.author}: {item.text}"
             for item in normal_messages
             if item.index not in group_indices
             and start - 45 <= item.elapsed <= end + 45
@@ -562,6 +552,113 @@ def analyze_zoom_chat(
                 score=round(score, 2),
                 classification=classification,
                 reasons=tuple(reasons),
+                context=context,
+            )
+        )
+    return sorted(candidates, key=lambda item: (item.start, item.author.casefold()))
+
+
+def messages_in_clock_interval(
+    source: str | Path,
+    config: SocialProofConfig,
+    start_clock: float,
+    end_clock: float,
+    *,
+    clock_adjustment_minutes: float = 0.0,
+) -> list[FeedbackCandidate]:
+    """Return every non-staff chat message inside an inclusive wall-clock range."""
+    validate_social_proof_config(config)
+    start_value = float(start_clock)
+    end_value = float(end_clock)
+    if not 0.0 <= start_value < 86400.0 or not 0.0 <= end_value < 86400.0:
+        raise ValueError("O intervalo precisa usar horários válidos entre 00:00:00 e 23:59:59.")
+    if end_value < start_value:
+        raise ValueError("O horário final precisa ser igual ou posterior ao horário inicial.")
+
+    messages = parse_zoom_chat(source)
+    if not messages:
+        return []
+    recording_start = infer_recording_datetime(source)
+    first_elapsed = messages[0].elapsed
+    clock_anchor = recording_start + timedelta(minutes=float(clock_adjustment_minutes))
+    staff_names = {
+        _normalize(member.full_name)
+        for member in config.staff
+        if member.enabled
+    }
+    teacher_aliases = tuple(
+        _normalize(alias)
+        for member in config.staff
+        if member.enabled
+        for alias in (member.full_name, *member.aliases)
+        if _normalize(alias)
+    )
+    reactions: dict[str, int] = {}
+    normal_messages: list[ZoomChatMessage] = []
+    for message in messages:
+        if message.kind == "reaction":
+            quote = _normalize(message.quoted_text)
+            if quote:
+                reactions[quote] = reactions.get(quote, 0) + 1
+        elif message.text.strip():
+            normal_messages.append(message)
+
+    eligible_messages = [
+        message
+        for message in normal_messages
+        if _normalize(message.author) not in staff_names
+    ]
+    color_map = _participant_color_map(message.author for message in eligible_messages)
+    candidates: list[FeedbackCandidate] = []
+    for message in eligible_messages:
+        wall_time = clock_anchor + timedelta(seconds=message.elapsed - first_elapsed)
+        wall_seconds = (
+            wall_time.hour * 3600 + wall_time.minute * 60 + wall_time.second
+        )
+        if wall_seconds < start_value or wall_seconds > end_value:
+            continue
+        normalized_text = _normalize(message.text)
+        score, positive_score, reasons = _score_feedback_text(
+            normalized_text,
+            config,
+            teacher_aliases,
+        )
+        reaction_count = reactions.get(normalized_text, 0)
+        if reaction_count:
+            bonus = min(2.0, reaction_count * config.reaction_bonus)
+            score += bonus
+            reasons.append(f"+{bonus:g} reação no chat")
+        if positive_score > 0 and score >= config.strong_threshold:
+            classification = "Forte"
+        elif positive_score > 0 and score >= config.possible_threshold:
+            classification = "Possível"
+        else:
+            classification = "Sem destaque"
+        context = tuple(
+            f"{clock_anchor + timedelta(seconds=item.elapsed - first_elapsed):%H:%M:%S}"
+            f" · {item.author}: {item.text}"
+            for item in normal_messages
+            if item.index != message.index
+            and message.elapsed - 45 <= item.elapsed <= message.elapsed + 45
+        )
+        candidates.append(
+            FeedbackCandidate(
+                id=(
+                    "interval-"
+                    + _digest(
+                        f"{message.index}-{message.author}-{message.elapsed}-{message.text}"
+                    )
+                ),
+                author=message.author,
+                display_name=_first_name(message.author),
+                start=message.elapsed,
+                end=message.elapsed,
+                wall_time=wall_time,
+                text=message.text,
+                avatar_color=color_map[message.author],
+                score=round(score, 2),
+                classification=classification,
+                reasons=tuple(reasons or ["Dentro do intervalo selecionado"]),
                 context=context,
             )
         )
@@ -977,6 +1074,30 @@ def approved_feedbacks_json(
         "feedbacks": [item.to_dict() for item in candidates],
     }
     return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+
+
+def _score_feedback_text(
+    normalized_text: str,
+    config: SocialProofConfig,
+    teacher_aliases: Iterable[str],
+) -> tuple[float, float, list[str]]:
+    score = 0.0
+    positive_score = 0.0
+    reasons: list[str] = []
+    for rule in config.rules:
+        if not rule.enabled:
+            continue
+        expression = _normalize(rule.expression)
+        if expression and expression in normalized_text:
+            score += rule.score
+            if rule.score > 0:
+                positive_score += rule.score
+            sign = "+" if rule.score > 0 else ""
+            reasons.append(f'{sign}{rule.score:g} “{rule.expression}”')
+    if any(_contains_phrase(normalized_text, alias) for alias in teacher_aliases):
+        score += config.teacher_mention_bonus
+        reasons.append(f"+{config.teacher_mention_bonus:g} menção a professor")
+    return score, positive_score, reasons
 
 
 def _group_messages(
